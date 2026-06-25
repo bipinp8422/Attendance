@@ -13,8 +13,8 @@ from typing import Optional
 
 from supabase import create_client, Client
 
-SUPABASE_URL = os.environ["https://qhkpngsagsabtkcktroq.supabase.co"]
-SUPABASE_SERVICE_KEY = os.environ["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFoa3BuZ3NhZ3NhYnRrY2t0cm9xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzODE2MzMsImV4cCI6MjA5Nzk1NzYzM30.P_0gHBN_1UbNnlqur6m5NRS2s_GU6HJ4jmfIRD7gW24"]
+SUPABASE_URL = "https://qhkpngsagsabtkcktroq.supabase.co"
+SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFoa3BuZ3NhZ3NhYnRrY2t0cm9xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzODE2MzMsImV4cCI6MjA5Nzk1NzYzM30.P_0gHBN_1UbNnlqur6m5NRS2s_GU6HJ4jmfIRD7gW24"
 PROOF_BUCKET = os.environ.get("SUPABASE_PROOF_BUCKET", "approval-proofs")
 
 _client: Optional[Client] = None
