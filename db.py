@@ -4,6 +4,22 @@ db.py — Supabase data-access layer for the Attendance Change Request System.
 Uses the Supabase SERVICE_ROLE key (server-side only, never exposed to
 the browser) so it bypasses Row Level Security. All access control is
 handled in the Streamlit app itself (login + role checks).
+
+Configuration:
+  Reads SUPABASE_URL and SUPABASE_SERVICE_KEY from (in priority order):
+    1. Environment variables
+    2. Streamlit secrets (st.secrets) — e.g. .streamlit/secrets.toml locally,
+       or the "Secrets" panel in Streamlit Cloud's app settings.
+
+  Required secrets.toml / env vars:
+    SUPABASE_URL = "https://xxxx.supabase.co"
+    SUPABASE_SERVICE_KEY = "eyJ..."   # the service_role key, NOT the anon key
+    SUPABASE_PROOF_BUCKET = "approval-proofs"   # optional, has a default
+
+  IMPORTANT: Get the service_role key from
+  Supabase Dashboard → Project Settings → API → "service_role" (secret).
+  Do NOT use the "anon" / "public" key here — it will be blocked by
+  Row Level Security on most tables.
 """
 
 import os
@@ -11,11 +27,28 @@ import uuid
 from datetime import datetime, date
 from typing import Optional
 
+import streamlit as st
 from supabase import create_client, Client
 
-SUPABASE_URL = "https://qhkpngsagsabtkcktroq.supabase.co"
-SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFoa3BuZ3NhZ3NhYnRrY2t0cm9xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzODE2MzMsImV4cCI6MjA5Nzk1NzYzM30.P_0gHBN_1UbNnlqur6m5NRS2s_GU6HJ4jmfIRD7gW24"
-PROOF_BUCKET = os.environ.get("SUPABASE_PROOF_BUCKET", "approval-proofs")
+
+def _get_config(key: str, default: Optional[str] = None) -> Optional[str]:
+    """Look up a config value from env vars first, then st.secrets, then default."""
+    val = os.environ.get(key)
+    if val:
+        return val
+    try:
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        # st.secrets raises if no secrets.toml exists at all — that's fine,
+        # just fall through to the default.
+        pass
+    return default
+
+
+SUPABASE_URL = https://qhkpngsagsabtkcktroq.supabase.co
+SUPABASE_SERVICE_KEY = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFoa3BuZ3NhZ3NhYnRrY2t0cm9xIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MjM4MTYzMywiZXhwIjoyMDk3OTU3NjMzfQ.kHmpfRquTw-ULgRN7uWf9BG7zn-NpMtzaNHqc08gGiM
+PROOF_BUCKET = _get_config("SUPABASE_PROOF_BUCKET", "approval-proofs")
 
 _client: Optional[Client] = None
 
@@ -23,6 +56,13 @@ _client: Optional[Client] = None
 def get_client() -> Client:
     global _client
     if _client is None:
+        if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+            raise RuntimeError(
+                "Missing Supabase configuration. Set SUPABASE_URL and "
+                "SUPABASE_SERVICE_KEY as environment variables or in "
+                "Streamlit secrets (.streamlit/secrets.toml locally, or the "
+                "'Secrets' panel in Streamlit Cloud's app settings)."
+            )
         _client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
     return _client
 
