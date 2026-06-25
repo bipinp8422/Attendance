@@ -1,429 +1,274 @@
+"""
+app.py — Streamlit Attendance Change Request System (Supabase-backed).
+
+Run with:  streamlit run app.py
+
+Flow:
+  1. Employee logs in, submits a change request + uploads the BM approval
+     email (as proof) → emails the Team Leader an approve/reject link.
+  2. TL clicks the link (no login needed) → request marked TL-approved/rejected.
+     If approved, emails the Business Manager an approve/reject link.
+  3. BM clicks the link → request marked BM-approved/rejected → final_status
+     becomes 'applied' or 'rejected'. Employee gets a status email.
+
+Everyone can also log into the app itself to see dashboards/history.
+"""
+
 import streamlit as st
-import pandas as pd
-import sqlalchemy as sa
-from urllib.parse import quote_plus
-from datetime import datetime, date
+from datetime import date
 
-# ────────────────────────────────────────────────
-# Database settings
-# ────────────────────────────────────────────────
-DB_USER = "root"
-DB_PASSWORD = "Bipin@8422931982"
-DB_HOST = "localhost"
-DB_PORT = 3306
-DB_NAME = "employee"
+import db
+import auth_utils
+import email_utils
 
-ATT_TABLE = "attendance"
-REQ_TABLE = "attendance_approval_requests"
-USER_TABLE = "users"
+st.set_page_config(page_title="Attendance Change Requests", page_icon="🗓️", layout="centered")
 
-encoded_pw = quote_plus(DB_PASSWORD)
-connection_string = (
-    f"mysql+mysqlconnector://{DB_USER}:{encoded_pw}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-)
-engine = sa.create_engine(connection_string)
 
-# ────────────────────────────────────────────────
-# Session State
-# ────────────────────────────────────────────────
-st.session_state.setdefault("authenticated", False)
-st.session_state.setdefault("role", None)
-st.session_state.setdefault("username", None)
+# ════════════════════════════════════════════════════
+#  0. Handle email approval links FIRST
+#     (?token=...&role=tl|bm&action=approve|reject)
+# ════════════════════════════════════════════════════
 
-# ────────────────────────────────────────────────
-# Login / Logout helpers (defined FIRST)
-# ────────────────────────────────────────────────
-def approval_login(role_required):
-    st.warning(f"🔐 {role_required} login required")
+def handle_email_token_action():
+    params = st.query_params
+    token = params.get("token")
+    role = params.get("role")
+    action = params.get("action")
 
-    with st.form(f"{role_required}_login"):
-        u = st.text_input("Login ID")
-        p = st.text_input("Password", type="password")
-        submit = st.form_submit_button("Login")
+    if not (token and role and action):
+        return False  # nothing to handle, continue to normal app
 
-    if submit:
-        user = pd.read_sql(
-            f"""
-            SELECT * FROM {USER_TABLE}
-            WHERE username=%s AND password=%s AND role=%s
-            """,
-            engine,
-            params=(u, p, role_required),
-        )
-        if user.empty:
-            st.error("Invalid credentials")
+    st.title("Attendance Change Request — Decision")
+
+    req = db.get_request_by_token(token, role)
+    if not req:
+        st.error("This link is invalid or has expired.")
+        return True
+
+    status_col = "tl_status" if role == "tl" else "bm_status"
+    if req[status_col] != "pending":
+        st.warning(f"This request was already **{req[status_col]}**. No further action needed.")
+        _show_request_card(req)
+        return True
+
+    employee = db.get_user(req["employee_id"])
+
+    st.subheader(f"Request from {employee['full_name']}")
+    _show_request_card(req)
+
+    if req.get("proof_file_path"):
+        try:
+            url = db.get_proof_file_url(req["proof_file_path"])
+            st.markdown(f"[📎 View BM approval email proof]({url})")
+        except Exception:
+            st.info("Proof file could not be loaded (link may have expired) — check it inside the app.")
+
+    remark = st.text_area("Add a remark (optional)")
+
+    if action == "approve":
+        if st.button("✅ Confirm Approval", type="primary"):
+            _apply_decision(role, req, approved=True, remark=remark)
+            st.success("Request approved.")
+        return True
+    elif action == "reject":
+        if st.button("❌ Confirm Rejection", type="primary"):
+            _apply_decision(role, req, approved=False, remark=remark)
+            st.error("Request rejected.")
+        return True
+
+    return True
+
+
+def _apply_decision(role: str, req: dict, approved: bool, remark: str):
+    request_id = req["request_id"]
+    employee = db.get_user(req["employee_id"])
+
+    if role == "tl":
+        updated = db.set_tl_decision(request_id, approved, remark)
+        db.log_action(request_id, f"tl_{'approved' if approved else 'rejected'}",
+                       remark, actor_label="TL via email link")
+        if approved:
+            bm_id = employee.get("business_manager_id")
+            bm = db.get_user(bm_id) if bm_id else None
+            if bm:
+                email_utils.send_bm_approval_request(bm["email"], bm["full_name"], updated, employee["full_name"])
         else:
-            st.session_state.authenticated = True
-            st.session_state.username = u
-            st.session_state.role = role_required
-            st.success(f"Logged in as {role_required}")
-            st.rerun()
+            email_utils.send_status_update(employee["email"], employee["full_name"], updated, "rejected")
 
-def logout():
-    st.session_state.authenticated = False
-    st.session_state.username = None
-    st.session_state.role = None
-    st.success("Logged out")
+    elif role == "bm":
+        updated = db.set_bm_decision(request_id, approved, remark)
+        db.log_action(request_id, f"bm_{'approved' if approved else 'rejected'}",
+                       remark, actor_label="BM via email link")
+        email_utils.send_status_update(
+            employee["email"], employee["full_name"], updated,
+            "applied" if approved else "rejected"
+        )
+
+
+def _show_request_card(req: dict):
+    c1, c2 = st.columns(2)
+    with c1:
+        st.write("**Attendance date:**", req["attendance_date"])
+        st.write("**Original value:**", req["original_value"])
+    with c2:
+        st.write("**Requested value:**", req["requested_value"])
+        st.write("**TL status:**", req["tl_status"], " | **BM status:**", req["bm_status"])
+    st.write("**Reason:**", req["reason_remark"])
+
+
+if handle_email_token_action():
+    st.stop()
+
+
+# ════════════════════════════════════════════════════
+#  1. Login
+# ════════════════════════════════════════════════════
+
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+if st.session_state.user is None:
+    st.title("🗓️ Attendance Change Request System")
+    st.subheader("Login")
+    email = st.text_input("Email")
+    password = st.text_input("Password", type="password")
+    if st.button("Log in", type="primary"):
+        user = auth_utils.login(email, password)
+        if user:
+            st.session_state.user = user
+            st.rerun()
+        else:
+            st.error("Invalid email or password.")
+    st.stop()
+
+user = st.session_state.user
+
+st.sidebar.write(f"👤 **{user['full_name']}**")
+st.sidebar.write(f"Role: `{user['role']}`")
+if st.sidebar.button("Log out"):
+    st.session_state.user = None
     st.rerun()
 
-# ────────────────────────────────────────────────
-# Page config
-# ────────────────────────────────────────────────
-st.set_page_config(page_title="Attendance Management", layout="wide")
 
-# ────────────────────────────────────────────────
-# Login Required Check
-# ────────────────────────────────────────────────
-if not st.session_state.authenticated:
-    st.title("Login Required")
-    st.markdown("Please login as TL or BM to view attendance records.")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        approval_login("TL")
-    with col2:
-        approval_login("BM")
-    st.stop()
+# ════════════════════════════════════════════════════
+#  2. Employee view — submit + track requests
+# ════════════════════════════════════════════════════
 
-# ────────────────────────────────────────────────
-# Authenticated - Set Title based on Role
-# ────────────────────────────────────────────────
-if st.session_state.role == "TL":
-    st.title(f"Team Attendance – {st.session_state.username}")
-    st.markdown("View your assigned employees' attendance. You can request edits (requires BM approval).")
-elif st.session_state.role == "BM":
-    st.title(f"Branch Attendance – {st.session_state.username}")
-    st.markdown("View your assigned branch/region employees' attendance. You can edit directly or approve TL requests.")
+def employee_view():
+    st.title("My Attendance Change Requests")
 
-# ────────────────────────────────────────────────
-# Get dynamic filter options
-# ────────────────────────────────────────────────
-@st.cache_data(ttl=600)
-def get_filter_options():
-    regions = pd.read_sql(
-        "SELECT DISTINCT store_region FROM attendance WHERE store_region IS NOT NULL",
-        engine
-    )["store_region"].tolist()
+    with st.expander("➕ New change request", expanded=True):
+        with st.form("new_request"):
+            att_date = st.date_input("Attendance date", value=date.today())
+            original = st.text_input("Original value (e.g. Absent, Half-day)")
+            requested = st.text_input("Requested value (e.g. Present)")
+            reason = st.text_area("Reason for the change")
+            proof_file = st.file_uploader(
+                "Upload the approval email you received from your BM (PDF or image)",
+                type=["pdf", "png", "jpg", "jpeg"]
+            )
+            submitted = st.form_submit_button("Submit request", type="primary")
 
-    statuses = pd.read_sql(
-        "SELECT DISTINCT status FROM attendance WHERE status IS NOT NULL",
-        engine
-    )["status"].tolist()
-
-    return sorted(regions), sorted(statuses)
-
-region_options, status_options = get_filter_options()
-
-# ────────────────────────────────────────────────
-# Sidebar filters
-# ────────────────────────────────────────────────
-with st.sidebar:
-    st.header("Filters")
-    region_filter = st.multiselect("Region", region_options)
-    status_filter = st.multiselect("Status", status_options)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        date_from = st.date_input("From date", value=None)
-    with col2:
-        date_to = st.date_input("To date", value=None)
-
-    edit_mode = False
-    if st.session_state.role in ["TL", "BM"]:
-        edit_mode = st.checkbox("Enable editing", value=False)
-
-    st.success(f"{st.session_state.username} ({st.session_state.role})")
-    if st.button("Logout"):
-        logout()
-
-    if st.button("Reload Data"):
-        st.cache_data.clear()
-        st.rerun()
-
-# ────────────────────────────────────────────────
-# Load data (added bm_name - ensure this column exists in your attendance table!)
-# If bm_name doesn't exist, add it to the table or remove the bm_name filter below.
-# ────────────────────────────────────────────────
-@st.cache_data(ttl=600)
-def load_data():
-    df = pd.read_sql(
-        f"""
-        SELECT store_region, userid, name, userstatus, doj, tl_name, bm_name, date, status
-        FROM attendance
-        ORDER BY userid, date
-        """,
-        engine
-    )
-    df["date"] = pd.to_datetime(df["date"])
-    df["doj"] = pd.to_datetime(df["doj"])
-    return df
-
-df = load_data()
-
-# ────────────────────────────────────────────────
-# Apply filters
-# ────────────────────────────────────────────────
-filtered = df.copy()
-
-if region_filter:
-    filtered = filtered[filtered["store_region"].isin(region_filter)]
-if status_filter:
-    filtered = filtered[filtered["status"].isin(status_filter)]
-if date_from:
-    filtered = filtered[filtered["date"] >= pd.to_datetime(date_from)]
-if date_to:
-    filtered = filtered[filtered["date"] <= pd.to_datetime(date_to)]
-
-# Assignment logic: TL sees only their employees, BM sees only their assigned branch/region employees
-if st.session_state.role == "TL":
-    filtered = filtered[filtered["tl_name"] == st.session_state.username]
-elif st.session_state.role == "BM":
-    filtered = filtered[filtered["bm_name"] == st.session_state.username]
-
-if filtered.empty:
-    st.warning("No data after applying filters or no employees assigned to you.")
-    st.stop()
-
-# ────────────────────────────────────────────────
-# Pivot
-# ────────────────────────────────────────────────
-pivot = filtered.pivot_table(
-    index=["store_region", "userid", "name", "userstatus", "doj", "tl_name", "bm_name"],
-    columns="date",
-    values="status",
-    aggfunc="first"
-).reset_index()
-
-pivot = pivot.sort_values(["store_region", "name"]).reset_index(drop=True)
-
-display_pivot = pivot.copy()
-display_pivot["doj"] = display_pivot["doj"].dt.strftime("%d-%m-%Y")
-
-display_pivot.columns = [
-    c.strftime("%d-%m-%Y") if isinstance(c, pd.Timestamp) else c
-    for c in display_pivot.columns
-]
-
-date_columns = [
-    c for c in display_pivot.columns
-    if c not in ["store_region", "userid", "name", "userstatus", "doj", "tl_name", "bm_name"]
-]
-
-# ────────────────────────────────────────────────
-# Conditional formatting
-# ────────────────────────────────────────────────
-def color_status(val):
-    colors = {
-        "P": "background-color: lightgreen",
-        "A": "background-color: lightcoral",
-        "L": "background-color: orange",
-        "H": "background-color: khaki",
-        "WO": "background-color: khaki",
-    }
-    return colors.get(val, "background-color: lightgray")
-
-# ────────────────────────────────────────────────
-# Display Table (View or Edit Mode)
-# ────────────────────────────────────────────────
-if edit_mode:
-    # ───── EDIT MODE ─────
-    column_config = {
-        "store_region": st.column_config.TextColumn(disabled=True, pinned=True),
-        "userid": st.column_config.TextColumn(disabled=True, pinned=True),
-        "name": st.column_config.TextColumn(disabled=True, pinned=True),
-        "userstatus": st.column_config.TextColumn(disabled=True, pinned=True),
-        "doj": st.column_config.TextColumn(disabled=True, pinned=True),
-        "tl_name": st.column_config.TextColumn(disabled=True, pinned=True),
-        "bm_name": st.column_config.TextColumn(disabled=True, pinned=True),
-    }
-
-    for col in date_columns:
-        column_config[col] = st.column_config.SelectboxColumn(
-            options=["", "P", "A", "L", "H", "WO"],
-            required=False
-        )
-
-    edited_df = st.data_editor(
-        display_pivot,
-        column_config=column_config,
-        use_container_width=True,
-        height=700,
-        hide_index=True,
-        num_rows="fixed"
-    )
-
-    if st.session_state.role == "TL":
-        remark = st.text_area("✍️ Remark (mandatory for submission)")
-
-        if st.button("Submit Changes for BM Approval"):
-            if not remark.strip():
-                st.error("Remark is mandatory")
+        if submitted:
+            if not (original and requested and reason and proof_file):
+                st.error("Please fill in all fields and attach the BM approval email.")
             else:
-                changes_made = False
-                with engine.begin() as conn:
-                    for i in range(len(edited_df)):
-                        for d in date_columns:
-                            old = display_pivot.iloc[i][d]
-                            new = edited_df.iloc[i][d]
+                proof_path = db.upload_proof_file(user["user_id"], proof_file.getvalue(), proof_file.name)
+                req = db.create_change_request(
+                    user["user_id"], att_date, original, requested, reason,
+                    proof_path, proof_file.name
+                )
+                db.log_action(req["request_id"], "submitted", reason, actor_user_id=user["user_id"])
 
-                            old_val = None if pd.isna(old) or old == "" else old
-                            new_val = None if pd.isna(new) or new == "" else new
-
-                            if old_val == new_val:
-                                continue
-
-                            changes_made = True
-                            conn.execute(
-                                sa.text("""
-                                    INSERT INTO attendance_approval_requests
-                                    (userid, att_date, old_status, new_status,
-                                     remark, level1_by, level1_at, level1_status)
-                                    VALUES
-                                    (:u, :d, :o, :n, :r, :by, NOW(), 'APPROVED')
-                                """),
-                                {
-                                    "u": edited_df.iloc[i]["userid"],
-                                    "d": datetime.strptime(d, "%d-%m-%Y").date(),
-                                    "o": old_val,
-                                    "n": new_val,
-                                    "r": remark,
-                                    "by": st.session_state.username
-                                }
-                            )
-                if changes_made:
-                    st.success("Changes submitted for BM approval")
-                    st.cache_data.clear()
-                    st.rerun()
+                tl = db.get_user(user.get("team_leader_id")) if user.get("team_leader_id") else None
+                if tl:
+                    email_utils.send_tl_approval_request(tl["email"], tl["full_name"], req, user["full_name"])
+                    st.success(f"Request submitted! An approval email was sent to your TL ({tl['full_name']}).")
                 else:
-                    st.info("No changes detected — nothing submitted.")
+                    st.warning("Request submitted, but no Team Leader is set for your account — contact admin.")
 
-    elif st.session_state.role == "BM":
-        if st.button("Save Changes Directly"):
-            changes_made = False
-            with engine.begin() as conn:
-                for i in range(len(edited_df)):
-                    for d in date_columns:
-                        old = display_pivot.iloc[i][d]
-                        new = edited_df.iloc[i][d]
+    st.subheader("History")
+    my_requests = db.get_my_requests(user["user_id"])
+    if not my_requests:
+        st.info("No requests yet.")
+    for req in my_requests:
+        with st.container(border=True):
+            _show_request_card(req)
+            st.caption(f"Final status: **{req['final_status']}**")
 
-                        old_val = None if pd.isna(old) or old == "" else old
-                        new_val = None if pd.isna(new) or new == "" else new
 
-                        if old_val == new_val:
-                            continue
+# ════════════════════════════════════════════════════
+#  3. Team Leader view
+# ════════════════════════════════════════════════════
 
-                        changes_made = True
-                        conn.execute(
-                            sa.text("""
-                                UPDATE attendance
-                                SET status = :s
-                                WHERE userid = :u AND date = :d
-                            """),
-                            {
-                                "s": new_val,
-                                "u": edited_df.iloc[i]["userid"],
-                                "d": datetime.strptime(d, "%d-%m-%Y").date()
-                            }
-                        )
-            if changes_made:
-                st.success("Changes saved directly to the database.")
-                st.cache_data.clear()
+def tl_view():
+    st.title("Pending Approvals — Team Leader")
+    pending = db.get_pending_for_tl(user["user_id"])
+    if not pending:
+        st.info("No pending requests.")
+    for req in pending:
+        employee = db.get_user(req["employee_id"])
+        with st.container(border=True):
+            st.write(f"**Employee:** {employee['full_name']}")
+            _show_request_card(req)
+            if req.get("proof_file_path"):
+                try:
+                    url = db.get_proof_file_url(req["proof_file_path"])
+                    st.markdown(f"[📎 View BM approval email proof]({url})")
+                except Exception:
+                    pass
+            remark = st.text_input("Remark", key=f"tl_remark_{req['request_id']}")
+            c1, c2 = st.columns(2)
+            if c1.button("✅ Approve", key=f"tl_appr_{req['request_id']}"):
+                _apply_decision("tl", req, True, remark)
                 st.rerun()
-            else:
-                st.info("No changes detected — nothing saved.")
+            if c2.button("❌ Reject", key=f"tl_rej_{req['request_id']}"):
+                _apply_decision("tl", req, False, remark)
+                st.rerun()
 
+
+# ════════════════════════════════════════════════════
+#  4. Business Manager view
+# ════════════════════════════════════════════════════
+
+def bm_view():
+    st.title("Final Approvals — Business Manager")
+    pending = db.get_pending_for_bm(user["user_id"])
+    if not pending:
+        st.info("No pending requests.")
+    for req in pending:
+        employee = db.get_user(req["employee_id"])
+        with st.container(border=True):
+            st.write(f"**Employee:** {employee['full_name']}")
+            _show_request_card(req)
+            if req.get("proof_file_path"):
+                try:
+                    url = db.get_proof_file_url(req["proof_file_path"])
+                    st.markdown(f"[📎 View BM approval email proof]({url})")
+                except Exception:
+                    pass
+            remark = st.text_input("Remark", key=f"bm_remark_{req['request_id']}")
+            c1, c2 = st.columns(2)
+            if c1.button("✅ Approve", key=f"bm_appr_{req['request_id']}"):
+                _apply_decision("bm", req, True, remark)
+                st.rerun()
+            if c2.button("❌ Reject", key=f"bm_rej_{req['request_id']}"):
+                _apply_decision("bm", req, False, remark)
+                st.rerun()
+
+
+# ════════════════════════════════════════════════════
+#  Route by role
+# ════════════════════════════════════════════════════
+
+if user["role"] == "employee":
+    employee_view()
+elif user["role"] == "tl":
+    tl_view()
+elif user["role"] == "bm":
+    bm_view()
+elif user["role"] == "admin":
+    st.title("Admin")
+    st.write("Add an admin dashboard here (manage users, view all requests, etc.) as needed.")
 else:
-    # ───── VIEW MODE ─────
-    styled = display_pivot.style.applymap(color_status, subset=date_columns)
-
-    st.dataframe(
-        styled,
-        use_container_width=True,
-        height=700,
-        hide_index=True,
-        column_config={
-            "store_region": st.column_config.TextColumn(pinned=True),
-            "userid": st.column_config.TextColumn(pinned=True),
-            "name": st.column_config.TextColumn(pinned=True),
-            "userstatus": st.column_config.TextColumn(pinned=True),
-            "doj": st.column_config.TextColumn(pinned=True),
-            "tl_name": st.column_config.TextColumn(pinned=True),
-            "bm_name": st.column_config.TextColumn(pinned=True),
-        }
-    )
-
-# ────────────────────────────────────────────────
-# BM Approval Bucket (only visible to BM)
-# ────────────────────────────────────────────────
-if st.session_state.role == "BM":
-    st.subheader("🔵 Pending Approval Requests (from TLs)")
-
-    reqs = pd.read_sql(
-        """
-        SELECT * FROM attendance_approval_requests
-        WHERE level1_status='APPROVED'
-          AND level2_status='PENDING'
-        ORDER BY level1_at DESC
-        """,
-        engine
-    )
-
-    if reqs.empty:
-        st.info("No pending approval requests at this time.")
-    else:
-        for idx, r in reqs.iterrows():
-            with st.expander(
-                f"{r.userid} | {r.att_date} | {r.old_status} → {r.new_status} (Req ID: {r.id})"
-            ):
-                st.write("**Remark:**", r.remark)
-                st.write(f"Requested by {r.level1_by} on {r.level1_at}")
-
-                c1, c2 = st.columns(2)
-
-                if c1.button("Approve", key=f"approve_{r.id}_{idx}"):
-                    with engine.begin() as conn:
-                        conn.execute(
-                            sa.text("""
-                                UPDATE attendance
-                                SET status = :s
-                                WHERE userid = :u AND date = :d
-                            """),
-                            {"s": r.new_status, "u": r.userid, "d": r.att_date}
-                        )
-                        conn.execute(
-                            sa.text("""
-                                UPDATE attendance_approval_requests
-                                SET level2_status = 'APPROVED',
-                                    level2_by = :by,
-                                    level2_at = NOW()
-                                WHERE id = :id
-                            """),
-                            {"by": st.session_state.username, "id": r.id}
-                        )
-                    st.success(f"Request {r.id} approved")
-                    st.rerun()
-
-                if c2.button("Reject", key=f"reject_{r.id}_{idx}"):
-                    with engine.begin() as conn:
-                        conn.execute(
-                            sa.text("""
-                                UPDATE attendance_approval_requests
-                                SET level2_status = 'REJECTED',
-                                    level2_by = :by,
-                                    level2_at = NOW()
-                                WHERE id = :id
-                            """),
-                            {"by": st.session_state.username, "id": r.id}
-                        )
-                    st.warning(f"Request {r.id} rejected")
-                    st.rerun()
-
-# ────────────────────────────────────────────────
-# Download CSV
-# ────────────────────────────────────────────────
-st.download_button(
-    "Download Current View as CSV",
-    display_pivot.to_csv(index=False).encode("utf-8"),
-    f"attendance_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-    mime="text/csv"
-)
+    st.error("Unknown role.")
