@@ -1,1 +1,4 @@
-sqlalchemy
+streamlit
+supabase
+bcrypt
+python-dotenv
