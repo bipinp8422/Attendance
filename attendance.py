@@ -1,7 +1,4 @@
-
-# Let me create the improved app.py file with properly visible cards/containers
-
-improved_code = '''"""
+"""
 app.py — Streamlit Attendance Change Request System (Supabase-backed).
 
 Run with:  streamlit run app.py
@@ -24,7 +21,7 @@ import db
 import auth_utils
 
 # ════════════════════════════════════════════════════
-#  Custom CSS for attractive styling (using st.html for 2026)
+#  Custom CSS for attractive styling
 # ════════════════════════════════════════════════════
 
 CUSTOM_CSS = """
@@ -765,10 +762,3 @@ elif user["role"] == "admin":
     admin_view()
 else:
     st.error("⚠️ Unknown role. Please contact your administrator.")
-'''
-
-with open('/mnt/agents/output/app_improved.py', 'w') as f:
-    f.write(improved_code)
-
-print("File saved successfully!")
-print(f"Total lines: {len(improved_code.splitlines())}")
