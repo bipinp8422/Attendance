@@ -2,16 +2,6 @@
 app.py — Streamlit Attendance Change Request System (Supabase-backed).
 
 Run with:  streamlit run app.py
-
-Flow:
-  1. Employee logs in, submits a change request and uploads the approval
-     email they already received from their BM (as proof).
-  2. Team Leader logs into the app, reviews the proof, Approves/Rejects.
-  3. If TL approves, the request shows up for the Business Manager, who
-     logs in, reviews, and gives the final Approve/Reject.
-  4. final_status becomes 'applied' (BM approved) or 'rejected'.
-
-No emails are sent — everything happens inside the app.
 """
 
 import streamlit as st
@@ -108,13 +98,16 @@ def employee_view():
             if not (original and requested and reason and proof_file):
                 st.error("Please fill in all fields and attach the BM approval email.")
             else:
-                proof_path = db.upload_proof_file(user["user_id"], proof_file.getvalue(), proof_file.name)
-                req = db.create_change_request(
-                    user["user_id"], att_date, original, requested, reason,
-                    proof_path, proof_file.name
-                )
-                db.log_action(req["request_id"], "submitted", reason, actor_user_id=user["user_id"])
-                st.success("Request submitted! Your Team Leader will review it next.")
+                try:
+                    proof_path = db.upload_proof_file(user["user_id"], proof_file.getvalue(), proof_file.name)
+                    req = db.create_change_request(
+                        user["user_id"], att_date, original, requested, reason,
+                        proof_path, proof_file.name
+                    )
+                    db.log_action(req["request_id"], "submitted", reason, actor_user_id=user["user_id"])
+                    st.success("Request submitted! Your Team Leader will review it next.")
+                except RuntimeError as e:
+                    st.error(str(e))
 
     st.subheader("History")
     my_requests = db.get_my_requests(user["user_id"])
