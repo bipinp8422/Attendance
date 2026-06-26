@@ -1,187 +1,299 @@
 """
-app.py — Streamlit Attendance Change Request System (Supabase-backed).
+db.py — Supabase data-access layer for the Attendance Change Request System.
 
-Run with:  streamlit run app.py
+Uses the Supabase SERVICE_ROLE key (server-side only, never exposed to
+the browser) so it bypasses Row Level Security. All access control is
+handled in the Streamlit app itself (login + role checks).
+
+Configuration:
+  Reads SUPABASE_URL and SUPABASE_SERVICE_KEY from (in priority order):
+    1. Environment variables
+    2. Streamlit secrets (st.secrets) — e.g. .streamlit/secrets.toml locally,
+       or the "Secrets" panel in Streamlit Cloud's app settings.
+
+  Required secrets.toml / env vars:
+    SUPABASE_URL = "https://xxxx.supabase.co"
+    SUPABASE_SERVICE_KEY = "eyJ..."   # the service_role key, NOT the anon key
+    SUPABASE_PROOF_BUCKET = "approval-proofs"   # optional, has a default
+
+  IMPORTANT: Get the service_role key from
+  Supabase Dashboard → Project Settings → API → "service_role" (secret).
+  Do NOT use the "anon" / "public" key here — it will be blocked by
+  Row Level Security on most tables.
+
+  SECURITY NOTE: never hardcode SUPABASE_URL / SUPABASE_SERVICE_KEY as
+  literal strings in this file. Always load them via _get_config() below,
+  from environment variables or st.secrets. If a service_role key is ever
+  pasted into a chat, file, commit, or shared doc, treat it as compromised
+  and roll it immediately in Supabase Dashboard → Project Settings → API.
 """
 
+import os
+import uuid
+from datetime import datetime, date
+from typing import Optional
+
 import streamlit as st
-from datetime import date
-
-import db
-import auth_utils
-
-st.set_page_config(page_title="Attendance Change Requests", page_icon="🗓️", layout="centered")
+from supabase import create_client, Client
+from storage3.exceptions import StorageApiError
 
 
-def _show_request_card(req: dict):
-    c1, c2 = st.columns(2)
-    with c1:
-        st.write("**Attendance date:**", req["attendance_date"])
-        st.write("**Original value:**", req["original_value"])
-    with c2:
-        st.write("**Requested value:**", req["requested_value"])
-        st.write("**TL status:**", req["tl_status"], " | **BM status:**", req["bm_status"])
-    st.write("**Reason:**", req["reason_remark"])
+def _get_config(key: str, default: Optional[str] = None) -> Optional[str]:
+    """Look up a config value from env vars first, then st.secrets, then default."""
+    val = os.environ.get(key)
+    if val:
+        return val
+    try:
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        # st.secrets raises if no secrets.toml exists at all — that's fine,
+        # just fall through to the default.
+        pass
+    return default
 
 
-def _show_proof_link(req: dict):
-    if req.get("proof_file_path"):
-        try:
-            url = db.get_proof_file_url(req["proof_file_path"])
-            st.markdown(f"[📎 View attached approval email]({url})")
-        except Exception:
-            st.caption("Proof file could not be loaded.")
+SUPABASE_URL = _get_config("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = _get_config("SUPABASE_SERVICE_KEY")
+PROOF_BUCKET = _get_config("SUPABASE_PROOF_BUCKET", "approval-proofs")
+
+_client: Optional[Client] = None
 
 
-def _apply_decision(role: str, req: dict, approved: bool, remark: str):
-    request_id = req["request_id"]
-    if role == "tl":
-        db.set_tl_decision(request_id, approved, remark)
-        db.log_action(request_id, f"tl_{'approved' if approved else 'rejected'}",
-                       remark, actor_user_id=st.session_state.user["user_id"])
-    elif role == "bm":
-        db.set_bm_decision(request_id, approved, remark)
-        db.log_action(request_id, f"bm_{'approved' if approved else 'rejected'}",
-                       remark, actor_user_id=st.session_state.user["user_id"])
-
-
-# ════════════════════════════════════════════════════
-#  1. Login
-# ════════════════════════════════════════════════════
-
-if "user" not in st.session_state:
-    st.session_state.user = None
-
-if st.session_state.user is None:
-    st.title("🗓️ Attendance Change Request System")
-    st.subheader("Login")
-    email = st.text_input("Email")
-    password = st.text_input("Password", type="password")
-    if st.button("Log in", type="primary"):
-        user = auth_utils.login(email, password)
-        if user:
-            st.session_state.user = user
-            st.rerun()
-        else:
-            st.error("Invalid email or password.")
-    st.stop()
-
-user = st.session_state.user
-
-st.sidebar.write(f"👤 **{user['full_name']}**")
-st.sidebar.write(f"Role: `{user['role']}`")
-if st.sidebar.button("Log out"):
-    st.session_state.user = None
-    st.rerun()
-
-
-# ════════════════════════════════════════════════════
-#  2. Employee view — submit + track requests
-# ════════════════════════════════════════════════════
-
-def employee_view():
-    st.title("My Attendance Change Requests")
-
-    with st.expander("➕ New change request", expanded=True):
-        with st.form("new_request"):
-            att_date = st.date_input("Attendance date", value=date.today())
-            original = st.text_input("Original value (e.g. Absent, Half-day)")
-            requested = st.text_input("Requested value (e.g. Present)")
-            reason = st.text_area("Reason for the change")
-            proof_file = st.file_uploader(
-                "Attach the approval email you already received from your BM (PDF or image)",
-                type=["pdf", "png", "jpg", "jpeg"]
+def get_client() -> Client:
+    global _client
+    if _client is None:
+        if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+            raise RuntimeError(
+                "Missing Supabase configuration. Set SUPABASE_URL and "
+                "SUPABASE_SERVICE_KEY as environment variables or in "
+                "Streamlit secrets (.streamlit/secrets.toml locally, or the "
+                "'Secrets' panel in Streamlit Cloud's app settings)."
             )
-            submitted = st.form_submit_button("Submit request", type="primary")
-
-        if submitted:
-            if not (original and requested and reason and proof_file):
-                st.error("Please fill in all fields and attach the BM approval email.")
-            else:
-                try:
-                    proof_path = db.upload_proof_file(user["user_id"], proof_file.getvalue(), proof_file.name)
-                    req = db.create_change_request(
-                        user["user_id"], att_date, original, requested, reason,
-                        proof_path, proof_file.name
-                    )
-                    db.log_action(req["request_id"], "submitted", reason, actor_user_id=user["user_id"])
-                    st.success("Request submitted! Your Team Leader will review it next.")
-                except RuntimeError as e:
-                    st.error(str(e))
-
-    st.subheader("History")
-    my_requests = db.get_my_requests(user["user_id"])
-    if not my_requests:
-        st.info("No requests yet.")
-    for req in my_requests:
-        with st.container(border=True):
-            _show_request_card(req)
-            _show_proof_link(req)
-            st.caption(f"Final status: **{req['final_status']}**")
+        _client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+    return _client
 
 
-# ════════════════════════════════════════════════════
-#  3. Team Leader view
-# ════════════════════════════════════════════════════
-
-def tl_view():
-    st.title("Pending Approvals — Team Leader")
-    pending = db.get_pending_for_tl(user["user_id"])
-    if not pending:
-        st.info("No pending requests.")
-    for req in pending:
-        employee = db.get_user(req["employee_id"])
-        with st.container(border=True):
-            st.write(f"**Employee:** {employee['full_name']}")
-            _show_request_card(req)
-            _show_proof_link(req)
-            remark = st.text_input("Remark", key=f"tl_remark_{req['request_id']}")
-            c1, c2 = st.columns(2)
-            if c1.button("✅ Approve", key=f"tl_appr_{req['request_id']}"):
-                _apply_decision("tl", req, True, remark)
-                st.rerun()
-            if c2.button("❌ Reject", key=f"tl_rej_{req['request_id']}"):
-                _apply_decision("tl", req, False, remark)
-                st.rerun()
+def _ensure_bucket_exists(sb: Client, bucket_name: str) -> None:
+    """Creates the storage bucket if it doesn't already exist. Idempotent."""
+    try:
+        existing = sb.storage.list_buckets()
+        names = {b.name if hasattr(b, "name") else b.get("name") for b in existing}
+        if bucket_name not in names:
+            sb.storage.create_bucket(bucket_name, options={"public": False})
+    except Exception as e:
+        # If we can't list/create (e.g. race condition, already exists),
+        # don't block the upload attempt itself — let it surface its own error.
+        st.warning(f"Bucket check warning: {e}")
 
 
-# ════════════════════════════════════════════════════
-#  4. Business Manager view
-# ════════════════════════════════════════════════════
+# ────────────────────────────────────────────────
+#  Users
+# ────────────────────────────────────────────────
 
-def bm_view():
-    st.title("Final Approvals — Business Manager")
-    pending = db.get_pending_for_bm(user["user_id"])
-    if not pending:
-        st.info("No pending requests.")
-    for req in pending:
-        employee = db.get_user(req["employee_id"])
-        with st.container(border=True):
-            st.write(f"**Employee:** {employee['full_name']}")
-            _show_request_card(req)
-            _show_proof_link(req)
-            remark = st.text_input("Remark", key=f"bm_remark_{req['request_id']}")
-            c1, c2 = st.columns(2)
-            if c1.button("✅ Approve", key=f"bm_appr_{req['request_id']}"):
-                _apply_decision("bm", req, True, remark)
-                st.rerun()
-            if c2.button("❌ Reject", key=f"bm_rej_{req['request_id']}"):
-                _apply_decision("bm", req, False, remark)
-                st.rerun()
+def get_user(user_id: str) -> Optional[dict]:
+    sb = get_client()
+    res = sb.table("users").select("*").eq("user_id", user_id).execute()
+    return res.data[0] if res.data else None
 
 
-# ════════════════════════════════════════════════════
-#  Route by role
-# ════════════════════════════════════════════════════
+def get_user_by_email(email: str) -> Optional[dict]:
+    sb = get_client()
+    res = sb.table("users").select("*").eq("email", email).execute()
+    return res.data[0] if res.data else None
 
-if user["role"] == "employee":
-    employee_view()
-elif user["role"] == "tl":
-    tl_view()
-elif user["role"] == "bm":
-    bm_view()
-elif user["role"] == "admin":
-    st.title("Admin")
-    st.write("Add an admin dashboard here (manage users, view all requests, etc.) as needed.")
-else:
-    st.error("Unknown role.")
+
+def create_user(user_id, full_name, role, email, password_hash,
+                 team_leader_id=None, business_manager_id=None) -> dict:
+    sb = get_client()
+    payload = {
+        "user_id": user_id,
+        "full_name": full_name,
+        "role": role,
+        "email": email,
+        "password_hash": password_hash,
+        "team_leader_id": team_leader_id,
+        "business_manager_id": business_manager_id,
+    }
+    res = sb.table("users").insert(payload).execute()
+    return res.data[0]
+
+
+# ────────────────────────────────────────────────
+#  File upload (proof of BM approval email)
+# ────────────────────────────────────────────────
+
+# Map common extensions to proper MIME types — using the correct content
+# type avoids some storage backends rejecting "application/octet-stream"
+# for image/pdf buckets that have a mime-type allow-list configured.
+_MIME_TYPES = {
+    "pdf": "application/pdf",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+}
+
+
+def upload_proof_file(employee_id: str, file_bytes: bytes, original_filename: str) -> str:
+    """Uploads to Supabase Storage, returns the storage object path.
+
+    Raises a RuntimeError with a clear, human-readable message on failure
+    instead of letting the raw StorageApiError (and Streamlit Cloud's
+    redacted version of it) bubble up unexplained.
+    """
+    sb = get_client()
+    _ensure_bucket_exists(sb, PROOF_BUCKET)
+
+    ext = original_filename.rsplit(".", 1)[-1].lower() if "." in original_filename else "bin"
+    content_type = _MIME_TYPES.get(ext, "application/octet-stream")
+    path = f"{employee_id}/{uuid.uuid4().hex}.{ext}"
+
+    try:
+        sb.storage.from_(PROOF_BUCKET).upload(
+            path,
+            file_bytes,
+            file_options={"content-type": content_type, "upsert": "true"},
+        )
+    except StorageApiError as e:
+        # Surface the real reason instead of a generic redacted error.
+        raise RuntimeError(
+            f"Failed to upload proof file to bucket '{PROOF_BUCKET}': {e}. "
+            "Check that the bucket exists in Supabase Storage and that the "
+            "service_role key in your secrets is correct and not expired."
+        ) from e
+    except Exception as e:
+        raise RuntimeError(f"Unexpected error uploading proof file: {e}") from e
+
+    return path
+
+
+def get_proof_file_url(path: str, expires_in: int = 3600) -> str:
+    """Returns a temporary signed URL so TL/BM can view the proof file."""
+    sb = get_client()
+    try:
+        res = sb.storage.from_(PROOF_BUCKET).create_signed_url(path, expires_in)
+    except StorageApiError as e:
+        raise RuntimeError(f"Failed to create signed URL for '{path}': {e}") from e
+    return res.get("signedURL") or res.get("signed_url", "")
+
+
+# ────────────────────────────────────────────────
+#  Change requests
+# ────────────────────────────────────────────────
+
+def create_change_request(employee_id: str, attendance_date: date, original: str,
+                            requested: str, reason: str, proof_file_path: str,
+                            proof_file_name: str) -> dict:
+    sb = get_client()
+    payload = {
+        "employee_id": employee_id,
+        "attendance_date": attendance_date.isoformat() if isinstance(attendance_date, date) else attendance_date,
+        "original_value": original,
+        "requested_value": requested,
+        "reason_remark": reason,
+        "proof_file_path": proof_file_path,
+        "proof_file_name": proof_file_name,
+    }
+    res = sb.table("change_requests").insert(payload).execute()
+    return res.data[0]
+
+
+def get_request(request_id: int) -> Optional[dict]:
+    sb = get_client()
+    res = sb.table("change_requests").select("*").eq("request_id", request_id).execute()
+    return res.data[0] if res.data else None
+
+
+def get_request_by_token(token: str, role: str) -> Optional[dict]:
+    """role is 'tl' or 'bm' — looks up by tl_token or bm_token."""
+    col = "tl_token" if role == "tl" else "bm_token"
+    sb = get_client()
+    res = sb.table("change_requests").select("*").eq(col, token).execute()
+    return res.data[0] if res.data else None
+
+
+def get_my_requests(employee_id: str) -> list[dict]:
+    sb = get_client()
+    res = (sb.table("change_requests").select("*")
+           .eq("employee_id", employee_id)
+           .order("created_at", desc=True).execute())
+    return res.data
+
+
+def get_pending_for_tl(tl_id: str) -> list[dict]:
+    """All pending requests from employees who report to this TL."""
+    sb = get_client()
+    emp_res = sb.table("users").select("user_id").eq("team_leader_id", tl_id).execute()
+    employee_ids = [u["user_id"] for u in emp_res.data]
+    if not employee_ids:
+        return []
+    res = (sb.table("change_requests").select("*")
+           .in_("employee_id", employee_ids)
+           .eq("tl_status", "pending")
+           .order("created_at").execute())
+    return res.data
+
+
+def get_pending_for_bm(bm_id: str) -> list[dict]:
+    """All TL-approved, BM-pending requests from employees under this BM."""
+    sb = get_client()
+    emp_res = sb.table("users").select("user_id").eq("business_manager_id", bm_id).execute()
+    employee_ids = [u["user_id"] for u in emp_res.data]
+    if not employee_ids:
+        return []
+    res = (sb.table("change_requests").select("*")
+           .in_("employee_id", employee_ids)
+           .eq("tl_status", "approved")
+           .eq("bm_status", "pending")
+           .order("created_at").execute())
+    return res.data
+
+
+def set_tl_decision(request_id: int, approved: bool, remark: str = "") -> dict:
+    sb = get_client()
+    payload = {
+        "tl_status": "approved" if approved else "rejected",
+        "tl_remark": remark,
+        "tl_timestamp": datetime.utcnow().isoformat(),
+    }
+    if not approved:
+        payload["final_status"] = "rejected"
+    res = sb.table("change_requests").update(payload).eq("request_id", request_id).execute()
+    return res.data[0]
+
+
+def set_bm_decision(request_id: int, approved: bool, remark: str = "") -> dict:
+    sb = get_client()
+    payload = {
+        "bm_status": "approved" if approved else "rejected",
+        "bm_remark": remark,
+        "bm_timestamp": datetime.utcnow().isoformat(),
+        "final_status": "applied" if approved else "rejected",
+    }
+    res = sb.table("change_requests").update(payload).eq("request_id", request_id).execute()
+    return res.data[0]
+
+
+# ────────────────────────────────────────────────
+#  Audit log
+# ────────────────────────────────────────────────
+
+def log_action(request_id: int, action: str, remark: str = "",
+                actor_user_id: str = None, actor_label: str = None):
+    sb = get_client()
+    payload = {
+        "request_id": request_id,
+        "action": action,
+        "remark": remark,
+        "actor_user_id": actor_user_id,
+        "actor_label": actor_label,
+    }
+    sb.table("audit_log").insert(payload).execute()
+
+
+def get_audit_trail(request_id: int) -> list[dict]:
+    sb = get_client()
+    res = (sb.table("audit_log").select("*")
+           .eq("request_id", request_id)
+           .order("timestamp").execute())
+    return res.data
