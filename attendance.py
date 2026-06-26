@@ -4,14 +4,14 @@ app.py — Streamlit Attendance Change Request System (Supabase-backed).
 Run with:  streamlit run app.py
 
 Flow:
-  1. Employee logs in, submits a change request + uploads the BM approval
-     email (as proof) → emails the Team Leader an approve/reject link.
-  2. TL clicks the link (no login needed) → request marked TL-approved/rejected.
-     If approved, emails the Business Manager an approve/reject link.
-  3. BM clicks the link → request marked BM-approved/rejected → final_status
-     becomes 'applied' or 'rejected'. Employee gets a status email.
+  1. Employee logs in, submits a change request and uploads the approval
+     email they already received from their BM (as proof).
+  2. Team Leader logs into the app, reviews the proof, Approves/Rejects.
+  3. If TL approves, the request shows up for the Business Manager, who
+     logs in, reviews, and gives the final Approve/Reject.
+  4. final_status becomes 'applied' (BM approved) or 'rejected'.
 
-Everyone can also log into the app itself to see dashboards/history.
+No emails are sent — everything happens inside the app.
 """
 
 import streamlit as st
@@ -19,90 +19,8 @@ from datetime import date
 
 import db
 import auth_utils
-import email_utils
 
 st.set_page_config(page_title="Attendance Change Requests", page_icon="🗓️", layout="centered")
-
-
-# ════════════════════════════════════════════════════
-#  0. Handle email approval links FIRST
-#     (?token=...&role=tl|bm&action=approve|reject)
-# ════════════════════════════════════════════════════
-
-def handle_email_token_action():
-    params = st.query_params
-    token = params.get("token")
-    role = params.get("role")
-    action = params.get("action")
-
-    if not (token and role and action):
-        return False  # nothing to handle, continue to normal app
-
-    st.title("Attendance Change Request — Decision")
-
-    req = db.get_request_by_token(token, role)
-    if not req:
-        st.error("This link is invalid or has expired.")
-        return True
-
-    status_col = "tl_status" if role == "tl" else "bm_status"
-    if req[status_col] != "pending":
-        st.warning(f"This request was already **{req[status_col]}**. No further action needed.")
-        _show_request_card(req)
-        return True
-
-    employee = db.get_user(req["employee_id"])
-
-    st.subheader(f"Request from {employee['full_name']}")
-    _show_request_card(req)
-
-    if req.get("proof_file_path"):
-        try:
-            url = db.get_proof_file_url(req["proof_file_path"])
-            st.markdown(f"[📎 View BM approval email proof]({url})")
-        except Exception:
-            st.info("Proof file could not be loaded (link may have expired) — check it inside the app.")
-
-    remark = st.text_area("Add a remark (optional)")
-
-    if action == "approve":
-        if st.button("✅ Confirm Approval", type="primary"):
-            _apply_decision(role, req, approved=True, remark=remark)
-            st.success("Request approved.")
-        return True
-    elif action == "reject":
-        if st.button("❌ Confirm Rejection", type="primary"):
-            _apply_decision(role, req, approved=False, remark=remark)
-            st.error("Request rejected.")
-        return True
-
-    return True
-
-
-def _apply_decision(role: str, req: dict, approved: bool, remark: str):
-    request_id = req["request_id"]
-    employee = db.get_user(req["employee_id"])
-
-    if role == "tl":
-        updated = db.set_tl_decision(request_id, approved, remark)
-        db.log_action(request_id, f"tl_{'approved' if approved else 'rejected'}",
-                       remark, actor_label="TL via email link")
-        if approved:
-            bm_id = employee.get("business_manager_id")
-            bm = db.get_user(bm_id) if bm_id else None
-            if bm:
-                email_utils.send_bm_approval_request(bm["email"], bm["full_name"], updated, employee["full_name"])
-        else:
-            email_utils.send_status_update(employee["email"], employee["full_name"], updated, "rejected")
-
-    elif role == "bm":
-        updated = db.set_bm_decision(request_id, approved, remark)
-        db.log_action(request_id, f"bm_{'approved' if approved else 'rejected'}",
-                       remark, actor_label="BM via email link")
-        email_utils.send_status_update(
-            employee["email"], employee["full_name"], updated,
-            "applied" if approved else "rejected"
-        )
 
 
 def _show_request_card(req: dict):
@@ -116,8 +34,25 @@ def _show_request_card(req: dict):
     st.write("**Reason:**", req["reason_remark"])
 
 
-if handle_email_token_action():
-    st.stop()
+def _show_proof_link(req: dict):
+    if req.get("proof_file_path"):
+        try:
+            url = db.get_proof_file_url(req["proof_file_path"])
+            st.markdown(f"[📎 View attached approval email]({url})")
+        except Exception:
+            st.caption("Proof file could not be loaded.")
+
+
+def _apply_decision(role: str, req: dict, approved: bool, remark: str):
+    request_id = req["request_id"]
+    if role == "tl":
+        db.set_tl_decision(request_id, approved, remark)
+        db.log_action(request_id, f"tl_{'approved' if approved else 'rejected'}",
+                       remark, actor_user_id=st.session_state.user["user_id"])
+    elif role == "bm":
+        db.set_bm_decision(request_id, approved, remark)
+        db.log_action(request_id, f"bm_{'approved' if approved else 'rejected'}",
+                       remark, actor_user_id=st.session_state.user["user_id"])
 
 
 # ════════════════════════════════════════════════════
@@ -164,7 +99,7 @@ def employee_view():
             requested = st.text_input("Requested value (e.g. Present)")
             reason = st.text_area("Reason for the change")
             proof_file = st.file_uploader(
-                "Upload the approval email you received from your BM (PDF or image)",
+                "Attach the approval email you already received from your BM (PDF or image)",
                 type=["pdf", "png", "jpg", "jpeg"]
             )
             submitted = st.form_submit_button("Submit request", type="primary")
@@ -179,13 +114,7 @@ def employee_view():
                     proof_path, proof_file.name
                 )
                 db.log_action(req["request_id"], "submitted", reason, actor_user_id=user["user_id"])
-
-                tl = db.get_user(user.get("team_leader_id")) if user.get("team_leader_id") else None
-                if tl:
-                    email_utils.send_tl_approval_request(tl["email"], tl["full_name"], req, user["full_name"])
-                    st.success(f"Request submitted! An approval email was sent to your TL ({tl['full_name']}).")
-                else:
-                    st.warning("Request submitted, but no Team Leader is set for your account — contact admin.")
+                st.success("Request submitted! Your Team Leader will review it next.")
 
     st.subheader("History")
     my_requests = db.get_my_requests(user["user_id"])
@@ -194,6 +123,7 @@ def employee_view():
     for req in my_requests:
         with st.container(border=True):
             _show_request_card(req)
+            _show_proof_link(req)
             st.caption(f"Final status: **{req['final_status']}**")
 
 
@@ -211,12 +141,7 @@ def tl_view():
         with st.container(border=True):
             st.write(f"**Employee:** {employee['full_name']}")
             _show_request_card(req)
-            if req.get("proof_file_path"):
-                try:
-                    url = db.get_proof_file_url(req["proof_file_path"])
-                    st.markdown(f"[📎 View BM approval email proof]({url})")
-                except Exception:
-                    pass
+            _show_proof_link(req)
             remark = st.text_input("Remark", key=f"tl_remark_{req['request_id']}")
             c1, c2 = st.columns(2)
             if c1.button("✅ Approve", key=f"tl_appr_{req['request_id']}"):
@@ -241,12 +166,7 @@ def bm_view():
         with st.container(border=True):
             st.write(f"**Employee:** {employee['full_name']}")
             _show_request_card(req)
-            if req.get("proof_file_path"):
-                try:
-                    url = db.get_proof_file_url(req["proof_file_path"])
-                    st.markdown(f"[📎 View BM approval email proof]({url})")
-                except Exception:
-                    pass
+            _show_proof_link(req)
             remark = st.text_input("Remark", key=f"bm_remark_{req['request_id']}")
             c1, c2 = st.columns(2)
             if c1.button("✅ Approve", key=f"bm_appr_{req['request_id']}"):
