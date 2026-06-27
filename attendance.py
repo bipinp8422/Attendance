@@ -1,25 +1,30 @@
 import streamlit as st
 import pandas as pd
 import sqlalchemy as sa
-from urllib.parse import quote_plus
 from datetime import datetime, date
 
 # ────────────────────────────────────────────────
-# Database settings
+# Database settings (Supabase / Postgres)
+# Set these in Streamlit Cloud -> App settings -> Secrets, e.g.:
+#
+# DB_USER = "postgres"
+# DB_PASSWORD = "your-supabase-db-password"
+# DB_HOST = "db.xxxxxxxx.supabase.co"
+# DB_PORT = 6543
+# DB_NAME = "postgres"
 # ────────────────────────────────────────────────
-DB_USER = "root"
-DB_PASSWORD = "Bipin@8422931982"
-DB_HOST = "localhost"
-DB_PORT = 3306
-DB_NAME = "employee"
+DB_USER = st.secrets["DB_USER"]
+DB_PASSWORD = st.secrets["DB_PASSWORD"]
+DB_HOST = st.secrets["DB_HOST"]
+DB_PORT = st.secrets["DB_PORT"]
+DB_NAME = st.secrets["DB_NAME"]
 
 ATT_TABLE = "attendance"
 REQ_TABLE = "attendance_approval_requests"
 USER_TABLE = "users"
 
-encoded_pw = quote_plus(DB_PASSWORD)
 connection_string = (
-    f"mysql+mysqlconnector://{DB_USER}:{encoded_pw}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 )
 engine = sa.create_engine(connection_string)
 
@@ -43,12 +48,14 @@ def approval_login(role_required):
 
     if submit:
         user = pd.read_sql(
-            f"""
-            SELECT * FROM {USER_TABLE}
-            WHERE username=%s AND password=%s AND role=%s
-            """,
+            sa.text(
+                f"""
+                SELECT * FROM {USER_TABLE}
+                WHERE username=:u AND password=:p AND role=:r
+                """
+            ),
             engine,
-            params=(u, p, role_required),
+            params={"u": u, "p": p, "r": role_required},
         )
         if user.empty:
             st.error("Invalid credentials")
@@ -77,7 +84,7 @@ st.set_page_config(page_title="Attendance Management", layout="wide")
 if not st.session_state.authenticated:
     st.title("Login Required")
     st.markdown("Please login as TL or BM to view attendance records.")
-    
+
     col1, col2 = st.columns(2)
     with col1:
         approval_login("TL")
@@ -141,13 +148,12 @@ with st.sidebar:
         st.rerun()
 
 # ────────────────────────────────────────────────
-# Load data (added bm_name - ensure this column exists in your attendance table!)
-# If bm_name doesn't exist, add it to the table or remove the bm_name filter below.
+# Load data
 # ────────────────────────────────────────────────
 @st.cache_data(ttl=600)
 def load_data():
     df = pd.read_sql(
-        f"""
+        """
         SELECT store_region, userid, name, userstatus, doj, tl_name, bm_name, date, status
         FROM attendance
         ORDER BY userid, date
