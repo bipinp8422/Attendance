@@ -1,5 +1,8 @@
 import streamlit as st
 import pandas as pd
+import io
+import zipfile
+import urllib.request
 from datetime import datetime
 from supabase import create_client, Client
 
@@ -10,9 +13,8 @@ from supabase import create_client, Client
 # SUPABASE_URL = "https://xxxxxxxx.supabase.co"
 # SUPABASE_KEY = "your-anon-key"
 # ────────────────────────────────────────────────
-SUPABASE_URL = "https://qhkpngsagsabtkcktroq.supabase.co"
-SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFoa3BuZ3NhZ3NhYnRrY2t0cm9xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzODE2MzMsImV4cCI6MjA5Nzk1NzYzM30.P_0gHBN_1UbNnlqur6m5NRS2s_GU6HJ4jmfIRD7gW24"
-
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -177,15 +179,17 @@ if not st.session_state.authenticated:
     st.markdown("""
     <div class="login-banner">
         <h1>🗓️ Attendance Management</h1>
-        <p>Sign in as a Team Lead or Branch Manager to view and manage attendance records.</p>
+        <p>Sign in as a Team Lead, Branch Manager, or Admin to view and manage attendance records.</p>
     </div>
     """, unsafe_allow_html=True)
 
-    spacer_l, col1, col2, spacer_r = st.columns([1, 2, 2, 1])
+    spacer_l, col1, col2, col3, spacer_r = st.columns([1, 2, 2, 2, 1])
     with col1:
         approval_login("TL", "🧑‍💼")
     with col2:
         approval_login("BM", "🏢")
+    with col3:
+        approval_login("ADMIN", "🛡️")
     st.stop()
 
 # ────────────────────────────────────────────────
@@ -228,16 +232,19 @@ if df.empty:
 # ────────────────────────────────────────────────
 # Header
 # ────────────────────────────────────────────────
-role_icon = "🧑‍💼" if st.session_state.role == "TL" else "🏢"
+role_icon = {"TL": "🧑‍💼", "BM": "🏢", "ADMIN": "🛡️"}.get(st.session_state.role, "👤")
 header_l, header_r = st.columns([5, 1])
 with header_l:
     st.markdown(f"<span class='role-badge'>{role_icon} {st.session_state.role}</span>", unsafe_allow_html=True)
     if st.session_state.role == "TL":
         st.title(f"Team Attendance – {st.session_state.username}")
         st.caption("View your assigned employees' attendance. Edits require BM approval.")
-    else:
+    elif st.session_state.role == "BM":
         st.title(f"Branch Attendance – {st.session_state.username}")
         st.caption("View your assigned branch/region employees. Edit directly or approve TL requests.")
+    else:
+        st.title(f"Admin Console – {st.session_state.username}")
+        st.caption("View all attendance records and download approval attachments across the organization.")
 with header_r:
     st.write("")
     if st.button("🚪 Logout", use_container_width=True):
@@ -373,9 +380,14 @@ pinned_cols = ["store_region", "userid", "name", "userstatus", "doj", "tl_name",
 # ────────────────────────────────────────────────
 if st.session_state.role == "BM":
     tab_table, tab_approvals, tab_export = st.tabs(["📋 Attendance Table", "🔵 Approval Requests", "⬇️ Export"])
+    tab_admin = None
+elif st.session_state.role == "ADMIN":
+    tab_table, tab_admin, tab_export = st.tabs(["📋 Attendance Table", "🛡️ Approval Records & Attachments", "⬇️ Export"])
+    tab_approvals = None
 else:
     tab_table, tab_export = st.tabs(["📋 Attendance Table", "⬇️ Export"])
     tab_approvals = None
+    tab_admin = None
 
 # ───── TAB: Attendance Table ─────
 with tab_table:
@@ -585,6 +597,99 @@ if tab_approvals is not None:
                         st.warning(f"Request {r.id} rejected")
                         st.cache_data.clear()
                         st.rerun()
+
+# ───── TAB: Admin - Approval Records & Attachments ─────
+if tab_admin is not None:
+    with tab_admin:
+        resp = (
+            supabase.table(REQ_TABLE)
+            .select("*")
+            .order("level1_at", desc=True)
+            .execute()
+        )
+        all_reqs = pd.DataFrame(resp.data)
+
+        if all_reqs.empty:
+            st.info("No approval requests have been submitted yet.")
+        else:
+            st.caption(f"{len(all_reqs)} total approval record(s)")
+
+            status_pick = st.multiselect(
+                "Filter by final status",
+                options=sorted(all_reqs["level2_status"].dropna().unique().tolist()),
+                placeholder="All statuses"
+            )
+            view_df = all_reqs.copy()
+            if status_pick:
+                view_df = view_df[view_df["level2_status"].isin(status_pick)]
+
+            # Lookup employee names from attendance data by userid
+            name_lookup = df.drop_duplicates("userid").set_index("userid")["name"].to_dict()
+
+            def safe_filename(name, userid, att_date, ext):
+                clean_name = "".join(c for c in str(name) if c.isalnum() or c in (" ", "_")).strip().replace(" ", "_")
+                return f"{clean_name}_{userid}_{att_date}.{ext}"
+
+            st.markdown("###### Records")
+            for idx, r in view_df.iterrows():
+                emp_name = name_lookup.get(r.userid, r.userid)
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns([3, 2, 2])
+                    with c1:
+                        st.markdown(f"**{emp_name}** ({r.userid})")
+                        st.caption(f"{r.att_date}  |  {r.old_status or '—'} → {r.new_status or '—'}")
+                        st.caption(f"Remark: {r.remark or '—'}")
+                    with c2:
+                        st.caption(f"Requested by: {r.level1_by}")
+                        st.caption(f"Final status: **{r.level2_status or 'PENDING'}**")
+                    with c3:
+                        if r.get("attachment_url"):
+                            try:
+                                file_bytes = urllib.request.urlopen(r.attachment_url, timeout=10).read()
+                                ext = r.attachment_url.split(".")[-1].split("?")[0]
+                                fname = safe_filename(emp_name, r.userid, r.att_date, ext)
+                                st.download_button(
+                                    "⬇️ Download",
+                                    data=file_bytes,
+                                    file_name=fname,
+                                    key=f"dl_{r.id}_{idx}",
+                                    use_container_width=True
+                                )
+                            except Exception as e:
+                                st.caption(f"⚠️ Could not load file: {e}")
+                        else:
+                            st.caption("No attachment")
+
+            st.divider()
+            st.markdown("###### Bulk download")
+            st.caption("Download every attachment in the filtered list above as a single ZIP, each file named EmployeeName_UserID_Date.")
+
+            if st.button("📦 Download All as ZIP", type="primary"):
+                rows_with_files = [r for _, r in view_df.iterrows() if r.get("attachment_url")]
+                if not rows_with_files:
+                    st.warning("No attachments found in the current filtered view.")
+                else:
+                    with st.spinner(f"Packaging {len(rows_with_files)} file(s)..."):
+                        zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                            for r in rows_with_files:
+                                emp_name = name_lookup.get(r.userid, r.userid)
+                                try:
+                                    file_bytes = urllib.request.urlopen(r.attachment_url, timeout=10).read()
+                                    ext = r.attachment_url.split(".")[-1].split("?")[0]
+                                    fname = safe_filename(emp_name, r.userid, r.att_date, ext)
+                                    zf.writestr(fname, file_bytes)
+                                except Exception:
+                                    continue
+                        zip_buffer.seek(0)
+
+                    st.download_button(
+                        "⬇️ Click to save ZIP",
+                        data=zip_buffer,
+                        file_name=f"attendance_attachments_{datetime.now().strftime('%Y%m%d_%H%M')}.zip",
+                        mime="application/zip",
+                        type="primary"
+                    )
 
 # ───── TAB: Export ─────
 with tab_export:
