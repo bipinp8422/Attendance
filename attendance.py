@@ -1,32 +1,27 @@
 import streamlit as st
 import pandas as pd
-import sqlalchemy as sa
-from datetime import datetime, date
+from datetime import datetime
+from supabase import create_client, Client
 
 # ────────────────────────────────────────────────
-# Database settings (Supabase / Postgres)
-# Set these in Streamlit Cloud -> App settings -> Secrets, e.g.:
+# Supabase settings
+# Set these in Streamlit Cloud -> App settings -> Secrets:
 #
-# DB_USER = "postgres"
-# DB_PASSWORD = "your-supabase-db-password"
-# DB_HOST = "db.xxxxxxxx.supabase.co"
-# DB_PORT = 6543
-# DB_NAME = "postgres"
+# SUPABASE_URL = "https://xxxxxxxx.supabase.co"
+# SUPABASE_KEY = "your-anon-key"
+#
+# IMPORTANT: Make sure Row Level Security (RLS) is enabled on
+# users / attendance / attendance_approval_requests tables with
+# appropriate policies, since the anon key is exposed client-side.
 # ────────────────────────────────────────────────
-DB_USER = st.secrets["DB_USER"]
-DB_PASSWORD = st.secrets["DB_PASSWORD"]
-DB_HOST = st.secrets["DB_HOST"]
-DB_PORT = st.secrets["DB_PORT"]
-DB_NAME = st.secrets["DB_NAME"]
+SUPABASE_URL = "https://qhkpngsagsabtkcktroq.supabase.co"
+SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFoa3BuZ3NhZ3NhYnRrY2t0cm9xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzODE2MzMsImV4cCI6MjA5Nzk1NzYzM30.P_0gHBN_1UbNnlqur6m5NRS2s_GU6HJ4jmfIRD7gW24"
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 ATT_TABLE = "attendance"
 REQ_TABLE = "attendance_approval_requests"
 USER_TABLE = "users"
-
-connection_string = (
-    f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-)
-engine = sa.create_engine(connection_string)
 
 # ────────────────────────────────────────────────
 # Session State
@@ -47,17 +42,17 @@ def approval_login(role_required):
         submit = st.form_submit_button("Login")
 
     if submit:
-        user = pd.read_sql(
-            sa.text(
-                f"""
-                SELECT * FROM {USER_TABLE}
-                WHERE username=:u AND password=:p AND role=:r
-                """
-            ),
-            engine,
-            params={"u": u, "p": p, "r": role_required},
+        resp = (
+            supabase.table(USER_TABLE)
+            .select("*")
+            .eq("username", u)
+            .eq("password", p)
+            .eq("role", role_required)
+            .execute()
         )
-        if user.empty:
+        user_rows = resp.data
+
+        if not user_rows:
             st.error("Invalid credentials")
         else:
             st.session_state.authenticated = True
@@ -103,23 +98,47 @@ elif st.session_state.role == "BM":
     st.markdown("View your assigned branch/region employees' attendance. You can edit directly or approve TL requests.")
 
 # ────────────────────────────────────────────────
-# Get dynamic filter options
+# Load all attendance data (Supabase REST API, paginated)
 # ────────────────────────────────────────────────
 @st.cache_data(ttl=600)
-def get_filter_options():
-    regions = pd.read_sql(
-        "SELECT DISTINCT store_region FROM attendance WHERE store_region IS NOT NULL",
-        engine
-    )["store_region"].tolist()
+def load_data():
+    all_rows = []
+    page_size = 1000
+    start = 0
+    while True:
+        resp = (
+            supabase.table(ATT_TABLE)
+            .select("store_region, userid, name, userstatus, doj, tl_name, bm_name, date, status")
+            .range(start, start + page_size - 1)
+            .execute()
+        )
+        rows = resp.data
+        if not rows:
+            break
+        all_rows.extend(rows)
+        if len(rows) < page_size:
+            break
+        start += page_size
 
-    statuses = pd.read_sql(
-        "SELECT DISTINCT status FROM attendance WHERE status IS NOT NULL",
-        engine
-    )["status"].tolist()
+    df = pd.DataFrame(all_rows)
+    if df.empty:
+        return df
+    df["date"] = pd.to_datetime(df["date"])
+    df["doj"] = pd.to_datetime(df["doj"])
+    df = df.sort_values(["userid", "date"]).reset_index(drop=True)
+    return df
 
-    return sorted(regions), sorted(statuses)
+df = load_data()
 
-region_options, status_options = get_filter_options()
+if df.empty:
+    st.warning("No attendance data found.")
+    st.stop()
+
+# ────────────────────────────────────────────────
+# Get dynamic filter options (derived from loaded data)
+# ────────────────────────────────────────────────
+region_options = sorted(df["store_region"].dropna().unique().tolist())
+status_options = sorted(df["status"].dropna().unique().tolist())
 
 # ────────────────────────────────────────────────
 # Sidebar filters
@@ -146,25 +165,6 @@ with st.sidebar:
     if st.button("Reload Data"):
         st.cache_data.clear()
         st.rerun()
-
-# ────────────────────────────────────────────────
-# Load data
-# ────────────────────────────────────────────────
-@st.cache_data(ttl=600)
-def load_data():
-    df = pd.read_sql(
-        """
-        SELECT store_region, userid, name, userstatus, doj, tl_name, bm_name, date, status
-        FROM attendance
-        ORDER BY userid, date
-        """,
-        engine
-    )
-    df["date"] = pd.to_datetime(df["date"])
-    df["doj"] = pd.to_datetime(df["doj"])
-    return df
-
-df = load_data()
 
 # ────────────────────────────────────────────────
 # Apply filters
@@ -266,47 +266,6 @@ if edit_mode:
                 st.error("Remark is mandatory")
             else:
                 changes_made = False
-                with engine.begin() as conn:
-                    for i in range(len(edited_df)):
-                        for d in date_columns:
-                            old = display_pivot.iloc[i][d]
-                            new = edited_df.iloc[i][d]
-
-                            old_val = None if pd.isna(old) or old == "" else old
-                            new_val = None if pd.isna(new) or new == "" else new
-
-                            if old_val == new_val:
-                                continue
-
-                            changes_made = True
-                            conn.execute(
-                                sa.text("""
-                                    INSERT INTO attendance_approval_requests
-                                    (userid, att_date, old_status, new_status,
-                                     remark, level1_by, level1_at, level1_status)
-                                    VALUES
-                                    (:u, :d, :o, :n, :r, :by, NOW(), 'APPROVED')
-                                """),
-                                {
-                                    "u": edited_df.iloc[i]["userid"],
-                                    "d": datetime.strptime(d, "%d-%m-%Y").date(),
-                                    "o": old_val,
-                                    "n": new_val,
-                                    "r": remark,
-                                    "by": st.session_state.username
-                                }
-                            )
-                if changes_made:
-                    st.success("Changes submitted for BM approval")
-                    st.cache_data.clear()
-                    st.rerun()
-                else:
-                    st.info("No changes detected — nothing submitted.")
-
-    elif st.session_state.role == "BM":
-        if st.button("Save Changes Directly"):
-            changes_made = False
-            with engine.begin() as conn:
                 for i in range(len(edited_df)):
                     for d in date_columns:
                         old = display_pivot.iloc[i][d]
@@ -319,18 +278,45 @@ if edit_mode:
                             continue
 
                         changes_made = True
-                        conn.execute(
-                            sa.text("""
-                                UPDATE attendance
-                                SET status = :s
-                                WHERE userid = :u AND date = :d
-                            """),
-                            {
-                                "s": new_val,
-                                "u": edited_df.iloc[i]["userid"],
-                                "d": datetime.strptime(d, "%d-%m-%Y").date()
-                            }
-                        )
+                        supabase.table(REQ_TABLE).insert({
+                            "userid": edited_df.iloc[i]["userid"],
+                            "att_date": datetime.strptime(d, "%d-%m-%Y").date().isoformat(),
+                            "old_status": old_val,
+                            "new_status": new_val,
+                            "remark": remark,
+                            "level1_by": st.session_state.username,
+                            "level1_at": datetime.utcnow().isoformat(),
+                            "level1_status": "APPROVED",
+                        }).execute()
+
+                if changes_made:
+                    st.success("Changes submitted for BM approval")
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.info("No changes detected — nothing submitted.")
+
+    elif st.session_state.role == "BM":
+        if st.button("Save Changes Directly"):
+            changes_made = False
+            for i in range(len(edited_df)):
+                for d in date_columns:
+                    old = display_pivot.iloc[i][d]
+                    new = edited_df.iloc[i][d]
+
+                    old_val = None if pd.isna(old) or old == "" else old
+                    new_val = None if pd.isna(new) or new == "" else new
+
+                    if old_val == new_val:
+                        continue
+
+                    changes_made = True
+                    supabase.table(ATT_TABLE).update(
+                        {"status": new_val}
+                    ).eq("userid", edited_df.iloc[i]["userid"]).eq(
+                        "date", datetime.strptime(d, "%d-%m-%Y").date().isoformat()
+                    ).execute()
+
             if changes_made:
                 st.success("Changes saved directly to the database.")
                 st.cache_data.clear()
@@ -364,15 +350,15 @@ else:
 if st.session_state.role == "BM":
     st.subheader("🔵 Pending Approval Requests (from TLs)")
 
-    reqs = pd.read_sql(
-        """
-        SELECT * FROM attendance_approval_requests
-        WHERE level1_status='APPROVED'
-          AND level2_status='PENDING'
-        ORDER BY level1_at DESC
-        """,
-        engine
+    resp = (
+        supabase.table(REQ_TABLE)
+        .select("*")
+        .eq("level1_status", "APPROVED")
+        .eq("level2_status", "PENDING")
+        .order("level1_at", desc=True)
+        .execute()
     )
+    reqs = pd.DataFrame(resp.data)
 
     if reqs.empty:
         st.info("No pending approval requests at this time.")
@@ -387,41 +373,29 @@ if st.session_state.role == "BM":
                 c1, c2 = st.columns(2)
 
                 if c1.button("Approve", key=f"approve_{r.id}_{idx}"):
-                    with engine.begin() as conn:
-                        conn.execute(
-                            sa.text("""
-                                UPDATE attendance
-                                SET status = :s
-                                WHERE userid = :u AND date = :d
-                            """),
-                            {"s": r.new_status, "u": r.userid, "d": r.att_date}
-                        )
-                        conn.execute(
-                            sa.text("""
-                                UPDATE attendance_approval_requests
-                                SET level2_status = 'APPROVED',
-                                    level2_by = :by,
-                                    level2_at = NOW()
-                                WHERE id = :id
-                            """),
-                            {"by": st.session_state.username, "id": r.id}
-                        )
+                    supabase.table(ATT_TABLE).update(
+                        {"status": r.new_status}
+                    ).eq("userid", r.userid).eq("date", r.att_date).execute()
+
+                    supabase.table(REQ_TABLE).update({
+                        "level2_status": "APPROVED",
+                        "level2_by": st.session_state.username,
+                        "level2_at": datetime.utcnow().isoformat(),
+                    }).eq("id", r.id).execute()
+
                     st.success(f"Request {r.id} approved")
+                    st.cache_data.clear()
                     st.rerun()
 
                 if c2.button("Reject", key=f"reject_{r.id}_{idx}"):
-                    with engine.begin() as conn:
-                        conn.execute(
-                            sa.text("""
-                                UPDATE attendance_approval_requests
-                                SET level2_status = 'REJECTED',
-                                    level2_by = :by,
-                                    level2_at = NOW()
-                                WHERE id = :id
-                            """),
-                            {"by": st.session_state.username, "id": r.id}
-                        )
+                    supabase.table(REQ_TABLE).update({
+                        "level2_status": "REJECTED",
+                        "level2_by": st.session_state.username,
+                        "level2_at": datetime.utcnow().isoformat(),
+                    }).eq("id", r.id).execute()
+
                     st.warning(f"Request {r.id} rejected")
+                    st.cache_data.clear()
                     st.rerun()
 
 # ────────────────────────────────────────────────
