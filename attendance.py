@@ -10,9 +10,8 @@ from supabase import create_client, Client
 # SUPABASE_URL = "https://xxxxxxxx.supabase.co"
 # SUPABASE_KEY = "your-anon-key"
 # ────────────────────────────────────────────────
-SUPABASE_URL = "https://qhkpngsagsabtkcktroq.supabase.co"
-SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFoa3BuZ3NhZ3NhYnRrY2t0cm9xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzODE2MzMsImV4cCI6MjA5Nzk1NzYzM30.P_0gHBN_1UbNnlqur6m5NRS2s_GU6HJ4jmfIRD7gW24"
-
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -408,9 +407,28 @@ with tab_table:
                 type=["png", "jpg", "jpeg", "pdf"]
             )
 
+            # Detect if any cell was actually changed, before allowing submission
+            has_pending_changes = False
+            for i in range(len(edited_df)):
+                for d in date_columns:
+                    old = display_pivot.iloc[i][d]
+                    new = edited_df.iloc[i][d]
+                    old_val = None if pd.isna(old) or old == "" else old
+                    new_val = None if pd.isna(new) or new == "" else new
+                    if old_val != new_val:
+                        has_pending_changes = True
+                        break
+                if has_pending_changes:
+                    break
+
+            if has_pending_changes:
+                st.warning("📎 You changed at least one attendance status — an attachment (approval proof) is required to submit.")
+
             if st.button("Submit Changes for BM Approval", type="primary"):
                 if not remark.strip():
                     st.error("Remark is mandatory")
+                elif has_pending_changes and attachment is None:
+                    st.error("📎 Attachment is mandatory whenever you change a date's status — please upload approval proof.")
                 else:
                     attachment_url = None
                     if attachment is not None:
