@@ -10,9 +10,8 @@ from supabase import create_client, Client
 # SUPABASE_URL = "https://xxxxxxxx.supabase.co"
 # SUPABASE_KEY = "your-anon-key"
 # ────────────────────────────────────────────────
-SUPABASE_URL = "https://qhkpngsagsabtkcktroq.supabase.co"
-SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFoa3BuZ3NhZ3NhYnRrY2t0cm9xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzODE2MzMsImV4cCI6MjA5Nzk1NzYzM30.P_0gHBN_1UbNnlqur6m5NRS2s_GU6HJ4jmfIRD7gW24"
-
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -402,14 +401,9 @@ with tab_table:
 
         if st.session_state.role == "TL":
             st.markdown("##### 📨 Submit changes for BM approval")
-            remark = st.text_area("✍️ Remark (mandatory)", placeholder="Explain the reason for this change...")
-            attachment = st.file_uploader(
-                "📎 Attach approval proof (screenshot/PDF of approval email) — optional",
-                type=["png", "jpg", "jpeg", "pdf"]
-            )
 
-            # Detect if any cell was actually changed, before allowing submission
-            has_pending_changes = False
+            # Build list of individual changes (row, date)
+            pending_changes = []
             for i in range(len(edited_df)):
                 for d in date_columns:
                     old = display_pivot.iloc[i][d]
@@ -417,55 +411,77 @@ with tab_table:
                     old_val = None if pd.isna(old) or old == "" else old
                     new_val = None if pd.isna(new) or new == "" else new
                     if old_val != new_val:
-                        has_pending_changes = True
-                        break
-                if has_pending_changes:
-                    break
+                        pending_changes.append({
+                            "row": i,
+                            "date": d,
+                            "userid": edited_df.iloc[i]["userid"],
+                            "name": edited_df.iloc[i]["name"],
+                            "old": old_val,
+                            "new": new_val,
+                        })
 
-            if has_pending_changes:
-                st.warning("📎 You changed at least one attendance status — an attachment (approval proof) is required to submit.")
+            if not pending_changes:
+                st.info("No changes detected yet. Edit a date's status above to begin.")
+            else:
+                st.warning(
+                    f"📎 You changed {len(pending_changes)} date(s). "
+                    "Each change below requires its own attachment (approval proof) before you can submit."
+                )
 
-            if st.button("Submit Changes for BM Approval", type="primary"):
-                if not remark.strip():
-                    st.error("Remark is mandatory")
-                elif has_pending_changes and attachment is None:
-                    st.error("📎 Attachment is mandatory whenever you change a date's status — please upload approval proof.")
-                else:
-                    attachment_url = None
-                    if attachment is not None:
-                        file_bytes = attachment.getvalue()
-                        file_ext = attachment.name.split(".")[-1]
-                        storage_path = (
-                            f"{st.session_state.username}_"
-                            f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.{file_ext}"
-                        )
-                        try:
-                            supabase.storage.from_("approval-attachments").upload(
-                                storage_path, file_bytes, {"content-type": attachment.type}
+                remark = st.text_area("✍️ Overall remark (mandatory)", placeholder="Explain the reason for these changes...")
+
+                st.markdown("###### Per-change attachments")
+                change_attachments = {}
+                all_attached = True
+                for idx, chg in enumerate(pending_changes):
+                    with st.container(border=True):
+                        c1, c2 = st.columns([2, 2])
+                        with c1:
+                            st.markdown(
+                                f"**{chg['name']}** ({chg['userid']})  \n"
+                                f"📅 {chg['date']}: `{chg['old'] or '—'}` → `{chg['new'] or '—'}`"
                             )
-                            attachment_url = supabase.storage.from_(
-                                "approval-attachments"
-                            ).get_public_url(storage_path)
-                        except Exception as e:
-                            st.error(f"Attachment upload failed: {e}")
-                            st.stop()
+                        with c2:
+                            file = st.file_uploader(
+                                "📎 Attachment (required)",
+                                type=["png", "jpg", "jpeg", "pdf"],
+                                key=f"attach_{idx}_{chg['userid']}_{chg['date']}"
+                            )
+                            change_attachments[idx] = file
+                            if file is None:
+                                all_attached = False
 
-                    changes_made = False
-                    with st.spinner("Submitting changes..."):
-                        for i in range(len(edited_df)):
-                            for d in date_columns:
-                                old = display_pivot.iloc[i][d]
-                                new = edited_df.iloc[i][d]
-                                old_val = None if pd.isna(old) or old == "" else old
-                                new_val = None if pd.isna(new) or new == "" else new
-                                if old_val == new_val:
-                                    continue
-                                changes_made = True
+                if st.button("Submit Changes for BM Approval", type="primary"):
+                    if not remark.strip():
+                        st.error("Overall remark is mandatory")
+                    elif not all_attached:
+                        st.error("📎 Every changed date requires its own attachment before submission.")
+                    else:
+                        with st.spinner("Uploading attachments and submitting changes..."):
+                            for idx, chg in enumerate(pending_changes):
+                                file = change_attachments[idx]
+                                file_bytes = file.getvalue()
+                                file_ext = file.name.split(".")[-1]
+                                storage_path = (
+                                    f"{st.session_state.username}_{chg['userid']}_"
+                                    f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{idx}.{file_ext}"
+                                )
+                                try:
+                                    supabase.storage.from_("approval-attachments").upload(
+                                        storage_path, file_bytes, {"content-type": file.type}
+                                    )
+                                    attachment_url = supabase.storage.from_(
+                                        "approval-attachments"
+                                    ).get_public_url(storage_path)
+                                except Exception as e:
+                                    st.error(f"Attachment upload failed for {chg['userid']} / {chg['date']}: {e}")
+                                    st.stop()
+
                                 supabase.table(REQ_TABLE).insert({
-                                    "userid": edited_df.iloc[i]["userid"],
-                                    "att_date": datetime.strptime(d, "%d-%m-%Y").date().isoformat(),
-                                    "old_status": old_val,
-                                    "new_status": new_val,
+                                    "userid": chg["userid"],
+                                    "att_date": datetime.strptime(chg["date"], "%d-%m-%Y").date().isoformat(),
+                                    "old_status": chg["old"],
+                                    "new_status": chg["new"],
                                     "remark": remark,
                                     "attachment_url": attachment_url,
                                     "level1_by": st.session_state.username,
@@ -473,12 +489,9 @@ with tab_table:
                                     "level1_status": "APPROVED",
                                 }).execute()
 
-                    if changes_made:
                         st.success("Changes submitted for BM approval ✅")
                         st.cache_data.clear()
                         st.rerun()
-                    else:
-                        st.info("No changes detected — nothing submitted.")
 
         elif st.session_state.role == "BM":
             if st.button("💾 Save Changes Directly", type="primary"):
