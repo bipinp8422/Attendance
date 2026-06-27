@@ -13,9 +13,8 @@ from supabase import create_client, Client
 # SUPABASE_URL = "https://xxxxxxxx.supabase.co"
 # SUPABASE_KEY = "your-anon-key"
 # ────────────────────────────────────────────────
-SUPABASE_URL = "https://qhkpngsagsabtkcktroq.supabase.co"
-SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFoa3BuZ3NhZ3NhYnRrY2t0cm9xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzODE2MzMsImV4cCI6MjA5Nzk1NzYzM30.P_0gHBN_1UbNnlqur6m5NRS2s_GU6HJ4jmfIRD7gW24"
-
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -180,16 +179,14 @@ if not st.session_state.authenticated:
     st.markdown("""
     <div class="login-banner">
         <h1>🗓️ Attendance Management</h1>
-        <p>Sign in as a Team Lead, Branch Manager, or Admin to view and manage attendance records.</p>
+        <p>Sign in as a Team Lead or Admin to view and manage attendance records.</p>
     </div>
     """, unsafe_allow_html=True)
 
-    spacer_l, col1, col2, col3, spacer_r = st.columns([1, 2, 2, 2, 1])
+    spacer_l, col1, col2, spacer_r = st.columns([1, 2, 2, 1])
     with col1:
         approval_login("TL", "🧑‍💼")
     with col2:
-        approval_login("BM", "🏢")
-    with col3:
         approval_login("ADMIN", "🛡️")
     st.stop()
 
@@ -233,16 +230,13 @@ if df.empty:
 # ────────────────────────────────────────────────
 # Header
 # ────────────────────────────────────────────────
-role_icon = {"TL": "🧑‍💼", "BM": "🏢", "ADMIN": "🛡️"}.get(st.session_state.role, "👤")
+role_icon = {"TL": "🧑‍💼", "ADMIN": "🛡️"}.get(st.session_state.role, "👤")
 header_l, header_r = st.columns([5, 1])
 with header_l:
     st.markdown(f"<span class='role-badge'>{role_icon} {st.session_state.role}</span>", unsafe_allow_html=True)
     if st.session_state.role == "TL":
         st.title(f"Team Attendance – {st.session_state.username}")
-        st.caption("View your assigned employees' attendance. Edits require BM approval.")
-    elif st.session_state.role == "BM":
-        st.title(f"Branch Attendance – {st.session_state.username}")
-        st.caption("View your assigned branch/region employees. Edit directly or approve TL requests.")
+        st.caption("View and directly update your assigned employees' attendance. An attachment is required for every change.")
     else:
         st.title(f"Admin Console – {st.session_state.username}")
         st.caption("View all attendance records and download approval attachments across the organization.")
@@ -277,7 +271,7 @@ with st.sidebar:
 
     st.divider()
     edit_mode = False
-    if st.session_state.role in ["TL", "BM"]:
+    if st.session_state.role == "TL":
         edit_mode = st.toggle("✏️ Enable editing", value=False)
 
     st.divider()
@@ -301,8 +295,6 @@ if date_to:
 
 if st.session_state.role == "TL":
     filtered = filtered[filtered["tl_name"] == st.session_state.username]
-elif st.session_state.role == "BM":
-    filtered = filtered[filtered["bm_name"] == st.session_state.username]
 
 if filtered.empty:
     st.warning("No data after applying filters or no employees assigned to you.")
@@ -379,15 +371,12 @@ pinned_cols = ["store_region", "userid", "name", "userstatus", "doj", "tl_name",
 # ────────────────────────────────────────────────
 # Tabs: Attendance Table | Approvals (BM only) | Export
 # ────────────────────────────────────────────────
-if st.session_state.role == "BM":
-    tab_table, tab_approvals, tab_export = st.tabs(["📋 Attendance Table", "🔵 Approval Requests", "⬇️ Export"])
-    tab_admin = None
-elif st.session_state.role == "ADMIN":
-    tab_table, tab_admin, tab_export = st.tabs(["📋 Attendance Table", "🛡️ Approval Records & Attachments", "⬇️ Export"])
-    tab_approvals = None
+# Tabs: Attendance Table | Approval Records (Admin only) | Export
+# ────────────────────────────────────────────────
+if st.session_state.role == "ADMIN":
+    tab_table, tab_admin, tab_export = st.tabs(["📋 Attendance Table", "🛡️ Change Records & Attachments", "⬇️ Export"])
 else:
     tab_table, tab_export = st.tabs(["📋 Attendance Table", "⬇️ Export"])
-    tab_approvals = None
     tab_admin = None
 
 # ───── TAB: Attendance Table ─────
@@ -414,7 +403,7 @@ with tab_table:
         st.divider()
 
         if st.session_state.role == "TL":
-            st.markdown("##### 📨 Submit changes for BM approval")
+            st.markdown("##### 📨 Apply attendance changes")
 
             # Build list of individual changes (row, date)
             pending_changes = []
@@ -439,7 +428,7 @@ with tab_table:
             else:
                 st.warning(
                     f"📎 You changed {len(pending_changes)} date(s). "
-                    "Each change below requires its own attachment (approval proof) before you can submit."
+                    "Each change below requires its own attachment (approval proof) before you can apply it."
                 )
 
                 remark = st.text_area("✍️ Overall remark (mandatory)", placeholder="Explain the reason for these changes...")
@@ -465,13 +454,13 @@ with tab_table:
                             if file is None:
                                 all_attached = False
 
-                if st.button("Submit Changes for BM Approval", type="primary"):
+                if st.button("✅ Apply Changes", type="primary"):
                     if not remark.strip():
                         st.error("Overall remark is mandatory")
                     elif not all_attached:
-                        st.error("📎 Every changed date requires its own attachment before submission.")
+                        st.error("📎 Every changed date requires its own attachment before applying.")
                     else:
-                        with st.spinner("Uploading attachments and submitting changes..."):
+                        with st.spinner("Uploading attachments and applying changes..."):
                             for idx, chg in enumerate(pending_changes):
                                 file = change_attachments[idx]
                                 file_bytes = file.getvalue()
@@ -491,9 +480,17 @@ with tab_table:
                                     st.error(f"Attachment upload failed for {chg['userid']} / {chg['date']}: {e}")
                                     st.stop()
 
+                                att_date_iso = datetime.strptime(chg["date"], "%d-%m-%Y").date().isoformat()
+
+                                # Apply the change directly to attendance — no approver needed
+                                supabase.table(ATT_TABLE).update(
+                                    {"status": chg["new"]}
+                                ).eq("userid", chg["userid"]).eq("date", att_date_iso).execute()
+
+                                # Log it for Admin's audit trail
                                 supabase.table(REQ_TABLE).insert({
                                     "userid": chg["userid"],
-                                    "att_date": datetime.strptime(chg["date"], "%d-%m-%Y").date().isoformat(),
+                                    "att_date": att_date_iso,
                                     "old_status": chg["old"],
                                     "new_status": chg["new"],
                                     "remark": remark,
@@ -501,38 +498,14 @@ with tab_table:
                                     "level1_by": st.session_state.username,
                                     "level1_at": datetime.utcnow().isoformat(),
                                     "level1_status": "APPROVED",
+                                    "level2_status": "APPROVED",
+                                    "level2_by": "AUTO (no approver required)",
+                                    "level2_at": datetime.utcnow().isoformat(),
                                 }).execute()
 
-                        st.success("Changes submitted for BM approval ✅")
+                        st.success("Changes applied directly to attendance records ✅")
                         st.cache_data.clear()
                         st.rerun()
-
-        elif st.session_state.role == "BM":
-            if st.button("💾 Save Changes Directly", type="primary"):
-                changes_made = False
-                with st.spinner("Saving changes..."):
-                    for i in range(len(edited_df)):
-                        for d in date_columns:
-                            old = display_pivot.iloc[i][d]
-                            new = edited_df.iloc[i][d]
-                            old_val = None if pd.isna(old) or old == "" else old
-                            new_val = None if pd.isna(new) or new == "" else new
-                            if old_val == new_val:
-                                continue
-                            changes_made = True
-                            supabase.table(ATT_TABLE).update(
-                                {"status": new_val}
-                            ).eq("userid", edited_df.iloc[i]["userid"]).eq(
-                                "date", datetime.strptime(d, "%d-%m-%Y").date().isoformat()
-                            ).execute()
-
-                if changes_made:
-                    st.success("Changes saved directly to the database ✅")
-                    st.cache_data.clear()
-                    st.rerun()
-                else:
-                    st.info("No changes detected — nothing saved.")
-
     else:
         styled = display_pivot.style.map(color_status, subset=date_columns)
         st.dataframe(
@@ -542,62 +515,6 @@ with tab_table:
             hide_index=True,
             column_config={c: st.column_config.TextColumn(pinned=True) for c in pinned_cols}
         )
-
-# ───── TAB: Approvals (BM only) ─────
-if tab_approvals is not None:
-    with tab_approvals:
-        resp = (
-            supabase.table(REQ_TABLE)
-            .select("*")
-            .eq("level1_status", "APPROVED")
-            .eq("level2_status", "PENDING")
-            .order("level1_at", desc=True)
-            .execute()
-        )
-        reqs = pd.DataFrame(resp.data)
-
-        if reqs.empty:
-            st.success("🎉 No pending approval requests — you're all caught up!")
-        else:
-            st.caption(f"{len(reqs)} request(s) awaiting your review")
-            for idx, r in reqs.iterrows():
-                with st.expander(
-                    f"🧾 {r['name'] if 'name' in r and pd.notna(r.get('name')) else r.userid}  |  "
-                    f"{r.att_date}  |  {r.old_status or '—'} → {r.new_status or '—'}  (Req #{r.id})"
-                ):
-                    c1, c2 = st.columns([3, 1])
-                    with c1:
-                        st.markdown(f"**Remark:** {r.remark}")
-                        st.caption(f"Requested by {r.level1_by} on {r.level1_at}")
-                        if r.get("attachment_url"):
-                            st.markdown(f"📎 [View attached proof]({r.attachment_url})")
-
-                    bcol1, bcol2 = st.columns(2)
-                    if bcol1.button("✅ Approve", key=f"approve_{r.id}_{idx}", use_container_width=True, type="primary"):
-                        supabase.table(ATT_TABLE).update(
-                            {"status": r.new_status}
-                        ).eq("userid", r.userid).eq("date", r.att_date).execute()
-
-                        supabase.table(REQ_TABLE).update({
-                            "level2_status": "APPROVED",
-                            "level2_by": st.session_state.username,
-                            "level2_at": datetime.utcnow().isoformat(),
-                        }).eq("id", r.id).execute()
-
-                        st.success(f"Request {r.id} approved")
-                        st.cache_data.clear()
-                        st.rerun()
-
-                    if bcol2.button("❌ Reject", key=f"reject_{r.id}_{idx}", use_container_width=True):
-                        supabase.table(REQ_TABLE).update({
-                            "level2_status": "REJECTED",
-                            "level2_by": st.session_state.username,
-                            "level2_at": datetime.utcnow().isoformat(),
-                        }).eq("id", r.id).execute()
-
-                        st.warning(f"Request {r.id} rejected")
-                        st.cache_data.clear()
-                        st.rerun()
 
 # ───── TAB: Admin - Approval Records & Attachments ─────
 if tab_admin is not None:
