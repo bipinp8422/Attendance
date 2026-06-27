@@ -13,9 +13,8 @@ from supabase import create_client, Client
 # SUPABASE_URL = "https://xxxxxxxx.supabase.co"
 # SUPABASE_KEY = "your-anon-key"
 # ────────────────────────────────────────────────
-SUPABASE_URL = "https://qhkpngsagsabtkcktroq.supabase.co"
-SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFoa3BuZ3NhZ3NhYnRrY2t0cm9xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzODE2MzMsImV4cCI6MjA5Nzk1NzYzM30.P_0gHBN_1UbNnlqur6m5NRS2s_GU6HJ4jmfIRD7gW24"
-
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -562,10 +561,11 @@ if tab_admin is not None:
                         st.caption(f"Requested by: {r.level1_by}")
                         st.caption(f"Final status: **{r.level2_status or 'PENDING'}**")
                     with c3:
-                        if r.get("attachment_url"):
+                        att_url = r.get("attachment_url")
+                        if att_url and not pd.isna(att_url) and str(att_url).strip().startswith("http"):
                             try:
-                                file_bytes = urllib.request.urlopen(r.attachment_url, timeout=10).read()
-                                ext = r.attachment_url.split(".")[-1].split("?")[0]
+                                file_bytes = urllib.request.urlopen(att_url, timeout=10).read()
+                                ext = att_url.split(".")[-1].split("?")[0]
                                 fname = safe_filename(emp_name, r.userid, r.att_date, ext)
                                 st.download_button(
                                     "⬇️ Download",
@@ -574,8 +574,8 @@ if tab_admin is not None:
                                     key=f"dl_{r.id}_{idx}",
                                     use_container_width=True
                                 )
-                            except Exception as e:
-                                st.caption(f"⚠️ Could not load file: {e}")
+                            except Exception:
+                                st.caption("⚠️ Attachment missing or broken (likely a failed old upload)")
                         else:
                             st.caption("No attachment")
 
@@ -584,7 +584,11 @@ if tab_admin is not None:
             st.caption("Download every attachment in the filtered list above as a single ZIP, each file named EmployeeName_UserID_Date.")
 
             if st.button("📦 Download All as ZIP", type="primary"):
-                rows_with_files = [r for _, r in view_df.iterrows() if r.get("attachment_url")]
+                rows_with_files = [
+                    r for _, r in view_df.iterrows()
+                    if r.get("attachment_url") and not pd.isna(r.get("attachment_url"))
+                    and str(r.get("attachment_url")).strip().startswith("http")
+                ]
                 if not rows_with_files:
                     st.warning("No attachments found in the current filtered view.")
                 else:
