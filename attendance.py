@@ -14,8 +14,9 @@ from supabase import create_client, Client
 # users / attendance / attendance_approval_requests tables with
 # appropriate policies, since the anon key is exposed client-side.
 # ────────────────────────────────────────────────
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+SUPABASE_URL = "https://qhkpngsagsabtkcktroq.supabase.co"
+SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFoa3BuZ3NhZ3NhYnRrY2t0cm9xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzODE2MzMsImV4cCI6MjA5Nzk1NzYzM30.P_0gHBN_1UbNnlqur6m5NRS2s_GU6HJ4jmfIRD7gW24"
+
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
