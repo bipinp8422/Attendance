@@ -14,9 +14,8 @@ from supabase import create_client, Client
 # users / attendance / attendance_approval_requests tables with
 # appropriate policies, since the anon key is exposed client-side.
 # ────────────────────────────────────────────────
-SUPABASE_URL = "https://qhkpngsagsabtkcktroq.supabase.co"
-SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFoa3BuZ3NhZ3NhYnRrY2t0cm9xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzODE2MzMsImV4cCI6MjA5Nzk1NzYzM30.P_0gHBN_1UbNnlqur6m5NRS2s_GU6HJ4jmfIRD7gW24"
-
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -261,11 +260,36 @@ if edit_mode:
 
     if st.session_state.role == "TL":
         remark = st.text_area("✍️ Remark (mandatory for submission)")
+        attachment = st.file_uploader(
+            "📎 Attach approval proof (e.g. approval email screenshot/PDF) — optional",
+            type=["png", "jpg", "jpeg", "pdf"]
+        )
 
         if st.button("Submit Changes for BM Approval"):
             if not remark.strip():
                 st.error("Remark is mandatory")
             else:
+                attachment_url = None
+                if attachment is not None:
+                    file_bytes = attachment.getvalue()
+                    file_ext = attachment.name.split(".")[-1]
+                    storage_path = (
+                        f"{st.session_state.username}_"
+                        f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.{file_ext}"
+                    )
+                    try:
+                        supabase.storage.from_("approval-attachments").upload(
+                            storage_path,
+                            file_bytes,
+                            {"content-type": attachment.type}
+                        )
+                        attachment_url = supabase.storage.from_(
+                            "approval-attachments"
+                        ).get_public_url(storage_path)
+                    except Exception as e:
+                        st.error(f"Attachment upload failed: {e}")
+                        st.stop()
+
                 changes_made = False
                 for i in range(len(edited_df)):
                     for d in date_columns:
@@ -285,6 +309,7 @@ if edit_mode:
                             "old_status": old_val,
                             "new_status": new_val,
                             "remark": remark,
+                            "attachment_url": attachment_url,
                             "level1_by": st.session_state.username,
                             "level1_at": datetime.utcnow().isoformat(),
                             "level1_status": "APPROVED",
@@ -370,6 +395,8 @@ if st.session_state.role == "BM":
             ):
                 st.write("**Remark:**", r.remark)
                 st.write(f"Requested by {r.level1_by} on {r.level1_at}")
+                if r.get("attachment_url"):
+                    st.markdown(f"📎 [View attached proof]({r.attachment_url})")
 
                 c1, c2 = st.columns(2)
 
