@@ -1,4 +1,4 @@
 streamlit
-supabase
-bcrypt
-python-dotenv
+pandas
+sqlalchemy
+mysql-connector-python
