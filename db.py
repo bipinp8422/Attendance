@@ -53,9 +53,8 @@ def _get_config(key: str, default: Optional[str] = None) -> Optional[str]:
     return default
 
 
-SUPABASE_URL = "https://qhkpngsagsabtkcktroq.supabase.co"
-SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFoa3BuZ3NhZ3NhYnRrY2t0cm9xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzODE2MzMsImV4cCI6MjA5Nzk1NzYzM30.P_0gHBN_1UbNnlqur6m5NRS2s_GU6HJ4jmfIRD7gW24"
-
+SUPABASE_URL = _get_config("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = _get_config("SUPABASE_SERVICE_KEY")
 PROOF_BUCKET = _get_config("SUPABASE_PROOF_BUCKET", "approval-proofs")
 
 _client: Optional[Client] = None
