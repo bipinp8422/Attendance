@@ -224,10 +224,6 @@ def load_data():
 
 df = load_data()
 
-if df.empty:
-    st.warning("No attendance data found.")
-    st.stop()
-
 # ────────────────────────────────────────────────
 # Header
 # ────────────────────────────────────────────────
@@ -240,11 +236,153 @@ with header_l:
         st.caption("View and directly update your assigned employees' attendance. An attachment is required for every change.")
     else:
         st.title(f"Admin Console – {st.session_state.username}")
-        st.caption("View all attendance records and download approval attachments across the organization.")
+        st.caption("Upload monthly attendance, view all records, and manage approval attachments across the organization.")
 with header_r:
     st.write("")
     if st.button("🚪 Logout", use_container_width=True):
         logout()
+
+# ────────────────────────────────────────────────
+# Pending-attachment dashboard metric (visible to both roles)
+# ────────────────────────────────────────────────
+@st.cache_data(ttl=300)
+def load_pending_requests_count(role, username):
+    q = supabase.table(REQ_TABLE).select("id, userid, attachment_url, level2_status, level1_by")
+    resp = q.execute()
+    reqs = pd.DataFrame(resp.data)
+    if reqs.empty:
+        return 0, 0, reqs
+    if role == "TL":
+        reqs = reqs[reqs["level1_by"] == username]
+    missing_attachment = reqs["attachment_url"].isna() | (reqs["attachment_url"].astype(str).str.strip() == "")
+    pending_status = reqs["level2_status"].isna() | (reqs["level2_status"].astype(str).str.upper() == "PENDING")
+    pending_count = int((missing_attachment | pending_status).sum())
+    missing_count = int(missing_attachment.sum())
+    return pending_count, missing_count, reqs
+
+pending_count, missing_attach_count, _pending_reqs_df = load_pending_requests_count(
+    st.session_state.role, st.session_state.username
+)
+
+if pending_count > 0:
+    st.markdown(f"""
+    <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;
+                padding:10px 16px;margin-bottom:14px;display:flex;align-items:center;gap:10px;">
+        <span style="font-size:20px;">📎</span>
+        <span style="color:#92400e;font-weight:600;">
+            {pending_count} leave/status-change request(s) pending approval
+            {f"or missing an attachment ({missing_attach_count} missing attachment)" if missing_attach_count else ""}
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
+
+if df.empty and st.session_state.role != "ADMIN":
+    st.warning("No attendance data found yet. Please ask Admin to upload this month's attendance.")
+    st.stop()
+
+# ────────────────────────────────────────────────
+# Admin: Upload Attendance tab content (works even if df is empty)
+# ────────────────────────────────────────────────
+REQUIRED_UPLOAD_COLS = ["store_region", "userid", "name", "userstatus", "doj", "tl_name", "bm_name", "date", "status"]
+
+def render_admin_upload():
+    st.markdown("##### 📤 Upload monthly attendance")
+    st.caption(
+        "Upload a CSV or Excel file with one row per employee per day. "
+        f"Required columns: `{', '.join(REQUIRED_UPLOAD_COLS)}`. "
+        "`status` should be one of P / A / L / H / WO. Existing rows for the same "
+        "`userid` + `date` will be overwritten (upsert)."
+    )
+
+    with st.expander("📋 See expected column format / sample"):
+        sample = pd.DataFrame({
+            "store_region": ["North"],
+            "userid": ["EMP001"],
+            "name": ["Jane Doe"],
+            "userstatus": ["Active"],
+            "doj": ["2023-01-15"],
+            "tl_name": ["tl_user1"],
+            "bm_name": ["bm_user1"],
+            "date": ["2026-06-01"],
+            "status": ["P"],
+        })
+        st.dataframe(sample, hide_index=True, use_container_width=True)
+
+    upload_file = st.file_uploader(
+        "Attendance file (.csv, .xlsx)", type=["csv", "xlsx", "xls"], key="admin_attendance_upload"
+    )
+
+    if upload_file is not None:
+        try:
+            if upload_file.name.lower().endswith(".csv"):
+                new_df = pd.read_csv(upload_file)
+            else:
+                new_df = pd.read_excel(upload_file)
+        except Exception as e:
+            st.error(f"Could not read file: {e}")
+            return
+
+        new_df.columns = [c.strip().lower() for c in new_df.columns]
+        missing_cols = [c for c in REQUIRED_UPLOAD_COLS if c not in new_df.columns]
+        if missing_cols:
+            st.error(f"Missing required column(s): {', '.join(missing_cols)}")
+            return
+
+        new_df = new_df[REQUIRED_UPLOAD_COLS].copy()
+
+        try:
+            new_df["date"] = pd.to_datetime(new_df["date"]).dt.strftime("%Y-%m-%d")
+            new_df["doj"] = pd.to_datetime(new_df["doj"]).dt.strftime("%Y-%m-%d")
+        except Exception as e:
+            st.error(f"Could not parse date/doj columns: {e}")
+            return
+
+        new_df["status"] = new_df["status"].astype(str).str.strip().str.upper()
+        valid_statuses = {"P", "A", "L", "H", "WO"}
+        bad_status_rows = new_df[~new_df["status"].isin(valid_statuses)]
+        if not bad_status_rows.empty:
+            st.warning(
+                f"{len(bad_status_rows)} row(s) have a status outside P/A/L/H/WO. "
+                "They will still be uploaded, but please double-check."
+            )
+
+        st.markdown(f"**Preview** ({len(new_df)} row(s) detected):")
+        st.dataframe(new_df.head(20), hide_index=True, use_container_width=True)
+        if len(new_df) > 20:
+            st.caption(f"...and {len(new_df) - 20} more row(s) not shown.")
+
+        month_label = pd.to_datetime(new_df["date"]).dt.strftime("%B %Y").unique()
+        st.caption(f"Detected month(s) in file: {', '.join(month_label)}")
+
+        if st.button("✅ Upload & Save to Database", type="primary"):
+            with st.spinner(f"Uploading {len(new_df)} row(s)..."):
+                records = new_df.to_dict(orient="records")
+                batch_size = 500
+                errors = []
+                for i in range(0, len(records), batch_size):
+                    batch = records[i:i + batch_size]
+                    try:
+                        supabase.table(ATT_TABLE).upsert(
+                            batch, on_conflict="userid,date"
+                        ).execute()
+                    except Exception as e:
+                        errors.append(str(e))
+
+            if errors:
+                st.error(
+                    "Some batches failed to upload. This usually means your attendance "
+                    "table needs a unique constraint on (userid, date) for upsert to work. "
+                    "Details: " + " | ".join(errors[:3])
+                )
+            else:
+                st.success(f"Uploaded {len(new_df)} row(s) successfully ✅")
+                st.cache_data.clear()
+                st.rerun()
+
+if st.session_state.role == "ADMIN" and df.empty:
+    st.info("No attendance data found yet. Upload this month's attendance below to get started.")
+    render_admin_upload()
+    st.stop()
 
 # ────────────────────────────────────────────────
 # Get dynamic filter options
@@ -330,6 +468,44 @@ for col, label, value in metrics:
 st.write("")
 
 # ────────────────────────────────────────────────
+# Per-employee Leave / Absence summary (for the filtered period)
+# ────────────────────────────────────────────────
+summary = (
+    filtered.groupby(["userid", "name", "tl_name", "store_region"])["status"]
+    .value_counts()
+    .unstack(fill_value=0)
+)
+for col in ["P", "A", "L", "H", "WO"]:
+    if col not in summary.columns:
+        summary[col] = 0
+summary = summary[["P", "A", "L", "H", "WO"]].reset_index()
+summary["Total Days"] = summary[["P", "A", "L", "H", "WO"]].sum(axis=1)
+summary["Leave Count"] = summary[["L", "H", "WO"]].sum(axis=1)
+summary = summary.rename(columns={"P": "Present", "A": "Absent", "L": "Leave", "H": "Holiday", "WO": "Week Off"})
+summary = summary.sort_values("Absent", ascending=False).reset_index(drop=True)
+
+with st.expander("📊 Leave & Absence Summary (per employee, filtered period)", expanded=(st.session_state.role == "TL")):
+    st.dataframe(
+        summary,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "userid": "Employee ID",
+            "name": "Name",
+            "tl_name": "Team Lead",
+            "store_region": "Region",
+        }
+    )
+    st.download_button(
+        "⬇️ Download summary as CSV",
+        summary.to_csv(index=False).encode("utf-8"),
+        f"leave_absence_summary_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+        mime="text/csv"
+    )
+
+st.write("")
+
+# ────────────────────────────────────────────────
 # Pivot
 # ────────────────────────────────────────────────
 pivot = filtered.pivot_table(
@@ -370,15 +546,16 @@ def color_status(val):
 pinned_cols = ["store_region", "userid", "name", "userstatus", "doj", "tl_name", "bm_name"]
 
 # ────────────────────────────────────────────────
-# Tabs: Attendance Table | Approvals (BM only) | Export
-# ────────────────────────────────────────────────
-# Tabs: Attendance Table | Approval Records (Admin only) | Export
+# Tabs
 # ────────────────────────────────────────────────
 if st.session_state.role == "ADMIN":
-    tab_table, tab_admin, tab_export = st.tabs(["📋 Attendance Table", "🛡️ Change Records & Attachments", "⬇️ Export"])
+    tab_table, tab_upload, tab_admin, tab_export = st.tabs(
+        ["📋 Attendance Table", "📤 Upload Attendance", "🛡️ Change Records & Attachments", "⬇️ Export"]
+    )
 else:
     tab_table, tab_export = st.tabs(["📋 Attendance Table", "⬇️ Export"])
     tab_admin = None
+    tab_upload = None
 
 # ───── TAB: Attendance Table ─────
 with tab_table:
@@ -405,6 +582,7 @@ with tab_table:
 
         if st.session_state.role == "TL":
             st.markdown("##### 📨 Apply attendance changes")
+            st.caption("Marking a day as Leave (L) or Week Off / Holiday requires a mail/approval attachment, same as any other status change.")
 
             # Build list of individual changes (row, date)
             pending_changes = []
@@ -429,7 +607,7 @@ with tab_table:
             else:
                 st.warning(
                     f"📎 You changed {len(pending_changes)} date(s). "
-                    "Each change below requires its own attachment (approval proof) before you can apply it."
+                    "Each change below requires its own attachment (mail/approval proof) before you can apply it."
                 )
 
                 remark = st.text_area("✍️ Overall remark (mandatory)", placeholder="Explain the reason for these changes...")
@@ -447,8 +625,8 @@ with tab_table:
                             )
                         with c2:
                             file = st.file_uploader(
-                                "📎 Attachment (required)",
-                                type=["png", "jpg", "jpeg", "pdf"],
+                                "📎 Mail/Attachment (required)",
+                                type=["png", "jpg", "jpeg", "pdf", "eml", "msg"],
                                 key=f"attach_{idx}_{chg['userid']}_{chg['date']}"
                             )
                             change_attachments[idx] = file
@@ -517,6 +695,11 @@ with tab_table:
             column_config={c: st.column_config.TextColumn(pinned=True) for c in pinned_cols}
         )
 
+# ───── TAB: Admin - Upload Attendance ─────
+if tab_upload is not None:
+    with tab_upload:
+        render_admin_upload()
+
 # ───── TAB: Admin - Approval Records & Attachments ─────
 if tab_admin is not None:
     with tab_admin:
@@ -531,6 +714,19 @@ if tab_admin is not None:
         if all_reqs.empty:
             st.info("No approval requests have been submitted yet.")
         else:
+            missing_attachment = all_reqs["attachment_url"].isna() | (all_reqs["attachment_url"].astype(str).str.strip() == "")
+            pending_status = all_reqs["level2_status"].isna() | (all_reqs["level2_status"].astype(str).str.upper() == "PENDING")
+            pending_total = int((missing_attachment | pending_status).sum())
+
+            mc1, mc2, mc3 = st.columns(3)
+            with mc1:
+                st.markdown(f"""<div class="metric-card"><div class="label">📨 Total Requests</div><div class="value">{len(all_reqs)}</div></div>""", unsafe_allow_html=True)
+            with mc2:
+                st.markdown(f"""<div class="metric-card"><div class="label">⏳ Pending / Missing Attachment</div><div class="value">{pending_total}</div></div>""", unsafe_allow_html=True)
+            with mc3:
+                st.markdown(f"""<div class="metric-card"><div class="label">📎 Missing Attachment Only</div><div class="value">{int(missing_attachment.sum())}</div></div>""", unsafe_allow_html=True)
+            st.write("")
+
             st.caption(f"{len(all_reqs)} total approval record(s)")
 
             status_pick = st.multiselect(
@@ -578,7 +774,7 @@ if tab_admin is not None:
                             except Exception:
                                 st.caption("⚠️ Attachment missing or broken (likely a failed old upload)")
                         else:
-                            st.caption("No attachment")
+                            st.caption("⚠️ No attachment uploaded")
 
             st.divider()
             st.markdown("###### Bulk download")
