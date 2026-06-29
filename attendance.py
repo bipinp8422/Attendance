@@ -8,14 +8,9 @@ from supabase import create_client, Client
 
 # ────────────────────────────────────────────────
 # Supabase settings
-# Set these in Streamlit Cloud -> App settings -> Secrets:
-#
-# SUPABASE_URL = "https://xxxxxxxx.supabase.co"
-# SUPABASE_KEY = "your-anon-key"
 # ────────────────────────────────────────────────
 SUPABASE_URL = "https://qhkpngsagsabtkcktroq.supabase.co"
 SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFoa3BuZ3NhZ3NhYnRrY2t0cm9xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzODE2MzMsImV4cCI6MjA5Nzk1NzYzM30.P_0gHBN_1UbNnlqur6m5NRS2s_GU6HJ4jmfIRD7gW24"
-
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -29,7 +24,7 @@ REQUIRED_UPLOAD_COLS = {
 }
 
 # ────────────────────────────────────────────────
-# Page config (must be first st call)
+# Page config
 # ────────────────────────────────────────────────
 st.set_page_config(
     page_title="Attendance Management",
@@ -43,13 +38,8 @@ st.set_page_config(
 # ────────────────────────────────────────────────
 st.markdown("""
 <style>
-    /* Overall page */
     .main { background-color: #f6f7fb; }
-
-    /* Headings */
     h1, h2, h3 { font-weight: 700; }
-
-    /* Card-like containers */
     .metric-card {
         background: #ffffff;
         border-radius: 14px;
@@ -69,8 +59,6 @@ st.markdown("""
         text-transform: uppercase;
         letter-spacing: 0.04em;
     }
-
-    /* Login screen card */
     .login-card {
         background: #ffffff;
         border-radius: 16px;
@@ -82,16 +70,8 @@ st.markdown("""
         text-align: center;
         padding: 36px 0 18px 0;
     }
-    .login-banner h1 {
-        font-size: 34px;
-        margin-bottom: 4px;
-    }
-    .login-banner p {
-        color: #6b7280;
-        font-size: 15px;
-    }
-
-    /* Buttons */
+    .login-banner h1 { font-size: 34px; margin-bottom: 4px; }
+    .login-banner p { color: #6b7280; font-size: 15px; }
     div.stButton > button {
         border-radius: 10px;
         font-weight: 600;
@@ -101,14 +81,10 @@ st.markdown("""
         background-color: #4f46e5;
         border: none;
     }
-
-    /* Sidebar */
     section[data-testid="stSidebar"] {
         background-color: #ffffff;
         border-right: 1px solid #eef0f5;
     }
-
-    /* Badge */
     .role-badge {
         display: inline-block;
         background: #eef2ff;
@@ -119,14 +95,10 @@ st.markdown("""
         border-radius: 999px;
         margin-bottom: 6px;
     }
-
-    /* Expander tweak */
     div[data-testid="stExpander"] {
         border-radius: 12px !important;
         border: 1px solid #eef0f5 !important;
     }
-
-    /* Pending badge */
     .pending-badge {
         display: inline-block;
         background: #fef3c7;
@@ -135,6 +107,37 @@ st.markdown("""
         font-size: 13px;
         padding: 4px 12px;
         border-radius: 999px;
+    }
+    /* Requirement badges for change cards */
+    .req-badge-leave {
+        display: inline-block;
+        background: #ede9fe;
+        color: #5b21b6;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 2px 10px;
+        border-radius: 999px;
+        margin-bottom: 4px;
+    }
+    .req-badge-absent {
+        display: inline-block;
+        background: #fee2e2;
+        color: #991b1b;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 2px 10px;
+        border-radius: 999px;
+        margin-bottom: 4px;
+    }
+    .req-badge-other {
+        display: inline-block;
+        background: #e0f2fe;
+        color: #075985;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 2px 10px;
+        border-radius: 999px;
+        margin-bottom: 4px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -172,9 +175,7 @@ def approval_login(role_required, icon):
             .eq("role", role_required)
             .execute()
         )
-        user_rows = resp.data
-
-        if not user_rows:
+        if not resp.data:
             st.error("Invalid credentials")
         else:
             st.session_state.authenticated = True
@@ -208,7 +209,7 @@ if not st.session_state.authenticated:
     st.stop()
 
 # ────────────────────────────────────────────────
-# Load all attendance data (Supabase REST API, paginated)
+# Load all attendance data
 # ────────────────────────────────────────────────
 @st.cache_data(ttl=600)
 def load_data():
@@ -239,13 +240,6 @@ def load_data():
     return df
 
 
-# ────────────────────────────────────────────────
-# Pending attachment helper
-# Treats a request as "pending" if it has no usable
-# attachment URL (e.g. upload failed, or it was never
-# attached). Since changes auto-approve, this is the
-# main thing left to chase down.
-# ────────────────────────────────────────────────
 @st.cache_data(ttl=120)
 def load_pending_attachment_count(username=None, role=None):
     resp = supabase.table(REQ_TABLE).select("id, attachment_url, level1_by").execute()
@@ -259,10 +253,6 @@ def load_pending_attachment_count(username=None, role=None):
     return len(pending)
 
 
-# ────────────────────────────────────────────────
-# Load approval-request records (used to know which
-# leave dates already have a valid mail attachment).
-# ────────────────────────────────────────────────
 @st.cache_data(ttl=120)
 def load_requests():
     resp = (
@@ -290,7 +280,7 @@ with header_l:
     st.markdown(f"<span class='role-badge'>{role_icon} {st.session_state.role}</span>", unsafe_allow_html=True)
     if st.session_state.role == "TL":
         st.title(f"Team Attendance – {st.session_state.username}")
-        st.caption("View and directly update your assigned employees' attendance. An attachment is required for every change.")
+        st.caption("View and directly update your assigned employees' attendance. Leave changes require an attachment; Absent changes require an individual remark.")
     else:
         st.title(f"Admin Console – {st.session_state.username}")
         st.caption("Upload monthly attendance, view all records, and download approval attachments across the organization.")
@@ -299,7 +289,6 @@ with header_r:
     if st.button("🚪 Logout", use_container_width=True):
         logout()
 
-# Pending attachments banner (org-wide for admin, own submissions for TL)
 pending_count = load_pending_attachment_count(
     username=st.session_state.username,
     role=st.session_state.role,
@@ -313,14 +302,11 @@ if pending_count > 0:
     st.write("")
 
 # ────────────────────────────────────────────────
-# Get dynamic filter options
+# Filter options & Sidebar
 # ────────────────────────────────────────────────
 region_options = sorted(df["store_region"].dropna().unique().tolist())
 status_options = sorted(df["status"].dropna().unique().tolist())
 
-# ────────────────────────────────────────────────
-# Sidebar filters
-# ────────────────────────────────────────────────
 with st.sidebar:
     st.markdown(f"### 👋 {st.session_state.username}")
     st.caption(f"Logged in as **{st.session_state.role}**")
@@ -363,7 +349,6 @@ if date_from:
     filtered = filtered[filtered["date"] >= pd.to_datetime(date_from)]
 if date_to:
     filtered = filtered[filtered["date"] <= pd.to_datetime(date_to)]
-
 if st.session_state.role == "TL":
     filtered = filtered[filtered["tl_name"] == st.session_state.username]
 
@@ -400,7 +385,7 @@ for col, label, value in metrics:
 st.write("")
 
 # ────────────────────────────────────────────────
-# Pivot
+# Pivot table
 # ────────────────────────────────────────────────
 pivot = filtered.pivot_table(
     index=["store_region", "userid", "name", "userstatus", "doj", "tl_name", "bm_name"],
@@ -413,7 +398,6 @@ pivot = pivot.sort_values(["store_region", "name"]).reset_index(drop=True)
 
 display_pivot = pivot.copy()
 display_pivot["doj"] = display_pivot["doj"].dt.strftime("%d-%m-%Y")
-
 display_pivot.columns = [
     c.strftime("%d-%m-%Y") if isinstance(c, pd.Timestamp) else c
     for c in display_pivot.columns
@@ -425,7 +409,7 @@ date_columns = [
 ]
 
 # ────────────────────────────────────────────────
-# Leave / absence summary (per employee, over filtered range)
+# Leave / absence summary
 # ────────────────────────────────────────────────
 STATUS_LABELS = {
     "P": "Present",
@@ -454,10 +438,6 @@ leave_summary = build_leave_summary(filtered)
 
 # ────────────────────────────────────────────────
 # Leave-date level mail tracking
-# Cross-reference each individual leave (status == "L")
-# date against attendance_approval_requests to see
-# whether a valid approval-mail attachment was received
-# for that exact userid + date.
 # ────────────────────────────────────────────────
 requests_df = load_requests()
 
@@ -478,7 +458,6 @@ leave_rows["mail_status"] = leave_rows.apply(
     axis=1,
 )
 
-# Roll mail counts up into the per-employee leave summary
 if not leave_rows.empty:
     mail_counts = (
         leave_rows.groupby("userid")["mail_status"]
@@ -512,8 +491,6 @@ pinned_cols = ["store_region", "userid", "name", "userstatus", "doj", "tl_name",
 
 # ────────────────────────────────────────────────
 # Tabs
-# Admin: Table | Leave Summary | Upload Attendance | Change Records | Export
-# TL:    Table | Leave Summary | Export
 # ────────────────────────────────────────────────
 if st.session_state.role == "ADMIN":
     tab_table, tab_leave, tab_upload, tab_admin, tab_export = st.tabs(
@@ -527,7 +504,13 @@ else:
 # ───── TAB: Attendance Table ─────
 with tab_table:
     if edit_mode:
-        st.info("✏️ Edit mode is on — change a cell's status, then submit/save below.", icon="✏️")
+        st.info(
+            "✏️ **Edit mode is on.** Rules per change type:\n"
+            "- 🟣 **→ Leave (L):** Attachment (approval mail/screenshot) is mandatory\n"
+            "- 🔴 **→ Absent (A):** Individual remark is mandatory\n"
+            "- 🔵 **Other changes:** Attachment is mandatory",
+            icon="✏️"
+        )
 
         column_config = {c: st.column_config.TextColumn(disabled=True, pinned=True) for c in pinned_cols}
         for col in date_columns:
@@ -550,7 +533,7 @@ with tab_table:
         if st.session_state.role == "TL":
             st.markdown("##### 📨 Apply attendance changes")
 
-            # Build list of individual changes (row, date)
+            # ── Detect changes ──────────────────────────────
             pending_changes = []
             for i in range(len(edited_df)):
                 for d in date_columns:
@@ -571,77 +554,155 @@ with tab_table:
             if not pending_changes:
                 st.info("No changes detected yet. Edit a date's status above to begin.")
             else:
+                leave_count   = sum(1 for c in pending_changes if c["new"] == "L")
+                absent_count  = sum(1 for c in pending_changes if c["new"] == "A")
+                other_count   = len(pending_changes) - leave_count - absent_count
+
+                summary_parts = []
+                if leave_count:
+                    summary_parts.append(f"🟣 {leave_count} Leave (attachment required)")
+                if absent_count:
+                    summary_parts.append(f"🔴 {absent_count} Absent (remark required)")
+                if other_count:
+                    summary_parts.append(f"🔵 {other_count} other (attachment required)")
+
                 st.warning(
-                    f"📎 You changed {len(pending_changes)} date(s). "
-                    "Each change below requires its own attachment (approval proof) before you can apply it. "
-                    "Changes to Leave (L) must include the leave-approval mail/screenshot as the attachment."
+                    f"**{len(pending_changes)} date(s) changed:** " + " · ".join(summary_parts) + ". "
+                    "Fill in the required field(s) for each change below before applying."
                 )
 
-                remark = st.text_area("✍️ Overall remark (mandatory)", placeholder="Explain the reason for these changes...")
+                # ── Global remark (always) ──────────────────
+                global_remark = st.text_area(
+                    "✍️ Overall remark (mandatory for all changes)",
+                    placeholder="Explain the general reason for these changes..."
+                )
 
-                st.markdown("###### Per-change attachments")
+                st.markdown("###### Per-change requirements")
+
                 change_attachments = {}
-                all_attached = True
+                change_remarks = {}      # per-change remark for Absent
+                all_requirements_met = True
+
                 for idx, chg in enumerate(pending_changes):
+                    is_leave  = chg["new"] == "L"
+                    is_absent = chg["new"] == "A"
+
+                    if is_leave:
+                        badge = "<span class='req-badge-leave'>🟣 Leave — attachment required</span>"
+                    elif is_absent:
+                        badge = "<span class='req-badge-absent'>🔴 Absent — remark required</span>"
+                    else:
+                        badge = "<span class='req-badge-other'>🔵 Change — attachment required</span>"
+
                     with st.container(border=True):
-                        c1, c2 = st.columns([2, 2])
-                        with c1:
-                            is_leave = chg["new"] == "L"
-                            label = "📩 Leave (mail attachment required)" if is_leave else f"📅 {chg['date']}"
+                        st.markdown(badge, unsafe_allow_html=True)
+                        header_col, input_col = st.columns([2, 2])
+
+                        with header_col:
                             st.markdown(
                                 f"**{chg['name']}** ({chg['userid']})  \n"
-                                f"{label}: `{chg['old'] or '—'}` → `{chg['new'] or '—'}`"
+                                f"📅 {chg['date']}: `{chg['old'] or '—'}` → `{chg['new'] or '—'}`"
                             )
-                        with c2:
-                            file = st.file_uploader(
-                                "📎 Attachment (required)" + (" — leave approval mail" if chg["new"] == "L" else ""),
-                                type=["png", "jpg", "jpeg", "pdf", "eml", "msg"],
-                                key=f"attach_{idx}_{chg['userid']}_{chg['date']}"
-                            )
-                            change_attachments[idx] = file
-                            if file is None:
-                                all_attached = False
 
+                        with input_col:
+                            if is_absent:
+                                # Absent → remark required, no attachment
+                                remark_val = st.text_area(
+                                    "📝 Remark for this Absent (required)",
+                                    placeholder="e.g. Employee was on unplanned leave, confirmed by BM...",
+                                    key=f"remark_{idx}_{chg['userid']}_{chg['date']}",
+                                    height=100,
+                                )
+                                change_remarks[idx] = remark_val
+                                change_attachments[idx] = None   # no attachment needed for absent
+                                if not remark_val.strip():
+                                    all_requirements_met = False
+
+                            elif is_leave:
+                                # Leave → attachment required (leave-approval mail)
+                                file = st.file_uploader(
+                                    "📩 Leave approval mail / screenshot (required)",
+                                    type=["png", "jpg", "jpeg", "pdf", "eml", "msg"],
+                                    key=f"attach_{idx}_{chg['userid']}_{chg['date']}",
+                                )
+                                change_attachments[idx] = file
+                                change_remarks[idx] = ""
+                                if file is None:
+                                    all_requirements_met = False
+
+                            else:
+                                # Any other change → attachment required
+                                file = st.file_uploader(
+                                    "📎 Supporting attachment (required)",
+                                    type=["png", "jpg", "jpeg", "pdf", "eml", "msg"],
+                                    key=f"attach_{idx}_{chg['userid']}_{chg['date']}",
+                                )
+                                change_attachments[idx] = file
+                                change_remarks[idx] = ""
+                                if file is None:
+                                    all_requirements_met = False
+
+                # ── Submit button ───────────────────────────
                 if st.button("✅ Apply Changes", type="primary"):
-                    if not remark.strip():
-                        st.error("Overall remark is mandatory")
-                    elif not all_attached:
-                        st.error("📎 Every changed date requires its own attachment before applying.")
+                    if not global_remark.strip():
+                        st.error("Overall remark is mandatory.")
+                    elif not all_requirements_met:
+                        missing = []
+                        for idx, chg in enumerate(pending_changes):
+                            if chg["new"] == "A" and not change_remarks.get(idx, "").strip():
+                                missing.append(f"{chg['name']} / {chg['date']} (remark missing)")
+                            elif chg["new"] != "A" and change_attachments.get(idx) is None:
+                                missing.append(f"{chg['name']} / {chg['date']} (attachment missing)")
+                        st.error(
+                            "Please fill in all required fields before applying:\n\n"
+                            + "\n".join(f"• {m}" for m in missing)
+                        )
                     else:
                         with st.spinner("Uploading attachments and applying changes..."):
                             for idx, chg in enumerate(pending_changes):
-                                file = change_attachments[idx]
-                                file_bytes = file.getvalue()
-                                file_ext = file.name.split(".")[-1]
-                                storage_path = (
-                                    f"{st.session_state.username}_{chg['userid']}_"
-                                    f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{idx}.{file_ext}"
-                                )
-                                try:
-                                    supabase.storage.from_("approval-attachments").upload(
-                                        storage_path, file_bytes, {"content-type": file.type}
-                                    )
-                                    attachment_url = supabase.storage.from_(
-                                        "approval-attachments"
-                                    ).get_public_url(storage_path)
-                                except Exception as e:
-                                    st.error(f"Attachment upload failed for {chg['userid']} / {chg['date']}: {e}")
-                                    st.stop()
-
                                 att_date_iso = datetime.strptime(chg["date"], "%d-%m-%Y").date().isoformat()
+                                file = change_attachments.get(idx)
+                                per_remark = change_remarks.get(idx, "")
+                                attachment_url = None
 
-                                # Apply the change directly to attendance — no approver needed
+                                # Upload attachment if one was provided
+                                if file is not None:
+                                    file_bytes = file.getvalue()
+                                    file_ext = file.name.split(".")[-1]
+                                    storage_path = (
+                                        f"{st.session_state.username}_{chg['userid']}_"
+                                        f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{idx}.{file_ext}"
+                                    )
+                                    try:
+                                        supabase.storage.from_("approval-attachments").upload(
+                                            storage_path, file_bytes, {"content-type": file.type}
+                                        )
+                                        attachment_url = supabase.storage.from_(
+                                            "approval-attachments"
+                                        ).get_public_url(storage_path)
+                                    except Exception as e:
+                                        st.error(f"Attachment upload failed for {chg['userid']} / {chg['date']}: {e}")
+                                        st.stop()
+
+                                # Build combined remark:
+                                # global remark + per-change remark (for Absent) or note (for Leave/other)
+                                if chg["new"] == "A" and per_remark.strip():
+                                    combined_remark = f"{global_remark.strip()} | Absent reason: {per_remark.strip()}"
+                                else:
+                                    combined_remark = global_remark.strip()
+
+                                # Apply the change directly to attendance
                                 supabase.table(ATT_TABLE).update(
                                     {"status": chg["new"]}
                                 ).eq("userid", chg["userid"]).eq("date", att_date_iso).execute()
 
-                                # Log it for Admin's audit trail
+                                # Log for Admin audit trail
                                 supabase.table(REQ_TABLE).insert({
                                     "userid": chg["userid"],
                                     "att_date": att_date_iso,
                                     "old_status": chg["old"],
                                     "new_status": chg["new"],
-                                    "remark": remark,
+                                    "remark": combined_remark,
                                     "attachment_url": attachment_url,
                                     "level1_by": st.session_state.username,
                                     "level1_at": datetime.utcnow().isoformat(),
@@ -701,13 +762,7 @@ with tab_leave:
         """, unsafe_allow_html=True)
 
     st.write("")
-    st.dataframe(
-        leave_summary,
-        use_container_width=True,
-        hide_index=True,
-        height=520,
-    )
-
+    st.dataframe(leave_summary, use_container_width=True, hide_index=True, height=520)
     st.download_button(
         "⬇️ Download Leave Summary as CSV",
         leave_summary.to_csv(index=False).encode("utf-8"),
@@ -719,21 +774,18 @@ with tab_leave:
     st.markdown("##### 📨 Leave Approval Mail Tracker")
     st.caption(
         "Date-wise view of every leave (L) taken in the selected range, and whether a valid "
-        "approval-mail attachment has been received for that specific date. "
-        "✅ = mail received · ⏳ = mail missing/pending."
+        "approval-mail attachment has been received. ✅ = mail received · ⏳ = mail missing/pending."
     )
 
     if leave_rows.empty:
         st.info("No leave (L) days in the currently selected filters.")
     else:
-        # Keep leave dates in chronological order across columns
         ordered_dates = (
             leave_rows[["date", "date_disp"]]
             .drop_duplicates()
             .sort_values("date")["date_disp"]
             .tolist()
         )
-
         tracker_pivot = leave_rows.pivot_table(
             index=["store_region", "userid", "name", "tl_name"],
             columns="date_disp",
@@ -741,7 +793,6 @@ with tab_leave:
             aggfunc="first",
         ).reset_index()
 
-        # Reorder date columns chronologically
         fixed_cols = ["store_region", "userid", "name", "tl_name"]
         tracker_pivot = tracker_pivot[fixed_cols + [d for d in ordered_dates if d in tracker_pivot.columns]]
         tracker_pivot = tracker_pivot.sort_values(["store_region", "name"]).reset_index(drop=True)
@@ -763,86 +814,12 @@ with tab_leave:
             height=420,
             column_config={c: st.column_config.TextColumn(pinned=True) for c in fixed_cols},
         )
-
         st.download_button(
             "⬇️ Download Mail Tracker as CSV",
             tracker_pivot.to_csv(index=False).encode("utf-8"),
             f"leave_mail_tracker_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
             mime="text/csv",
         )
-
-        # ────────────────────────────────────────
-        # Attach a missing mail directly to a leave date.
-        # This covers leave that was bulk-uploaded by Admin
-        # (so it never went through the edit/change flow)
-        # and just needs proof attached after the fact —
-        # it does NOT change the attendance status, only
-        # records the attachment against that date.
-        # ────────────────────────────────────────
-        pending_leave = leave_rows[leave_rows["mail_status"] == "⏳"].copy()
-
-        st.write("")
-        st.markdown("###### 📎 Attach missing approval mail")
-        if pending_leave.empty:
-            st.success("All leave dates in this view already have a mail attachment ✅")
-        else:
-            st.caption(
-                f"{len(pending_leave)} leave day(s) above are showing ⏳. "
-                "Click a row to upload its leave-approval mail — no need to change the status."
-            )
-            pending_leave = pending_leave.sort_values(["name", "date"])
-            for _, lr in pending_leave.iterrows():
-                exp_label = f"{lr['name']} ({lr['userid']}) — {lr['date_disp']}"
-                with st.expander(exp_label):
-                    mail_file = st.file_uploader(
-                        "📩 Leave approval mail (screenshot, PDF, or .eml/.msg)",
-                        type=["png", "jpg", "jpeg", "pdf", "eml", "msg"],
-                        key=f"pendingmail_{lr['userid']}_{lr['date_iso']}",
-                    )
-                    note = st.text_input(
-                        "Note (optional)",
-                        key=f"pendingnote_{lr['userid']}_{lr['date_iso']}",
-                    )
-                    if st.button("✅ Attach Mail", key=f"attachbtn_{lr['userid']}_{lr['date_iso']}", type="primary"):
-                        if mail_file is None:
-                            st.error("Please choose a file first.")
-                        else:
-                            file_bytes = mail_file.getvalue()
-                            file_ext = mail_file.name.split(".")[-1]
-                            storage_path = (
-                                f"{st.session_state.username}_{lr['userid']}_"
-                                f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_mail.{file_ext}"
-                            )
-                            try:
-                                supabase.storage.from_("approval-attachments").upload(
-                                    storage_path, file_bytes, {"content-type": mail_file.type}
-                                )
-                                attachment_url = supabase.storage.from_(
-                                    "approval-attachments"
-                                ).get_public_url(storage_path)
-                            except Exception as e:
-                                st.error(f"Upload failed: {e}")
-                                st.stop()
-
-                            supabase.table(REQ_TABLE).insert({
-                                "userid": lr["userid"],
-                                "att_date": lr["date_iso"],
-                                "old_status": "L",
-                                "new_status": "L",
-                                "remark": note.strip() if note and note.strip() else "Leave approval mail attached (no status change)",
-                                "attachment_url": attachment_url,
-                                "level1_by": st.session_state.username,
-                                "level1_at": datetime.utcnow().isoformat(),
-                                "level1_status": "APPROVED",
-                                "level2_status": "APPROVED",
-                                "level2_by": "AUTO (no approver required)",
-                                "level2_at": datetime.utcnow().isoformat(),
-                            }).execute()
-
-                            st.success(f"Mail attached for {lr['name']} on {lr['date_disp']} ✅")
-                            st.cache_data.clear()
-                            st.rerun()
-
 
 # ───── TAB: Admin - Upload Monthly Attendance ─────
 if tab_upload is not None:
@@ -853,11 +830,9 @@ if tab_upload is not None:
             "Required columns: " + ", ".join(sorted(REQUIRED_UPLOAD_COLS)) + ". "
             "Rows for an existing userid + date will overwrite the existing record."
         )
-
         st.info(
             "💡 For overwrite-on-upload to work, the `attendance` table needs a unique "
-            "constraint on (userid, date). If it doesn't have one yet, ask your DB admin to add it — "
-            "otherwise duplicate rows may be created instead of updated.",
+            "constraint on (userid, date). If it doesn't have one yet, ask your DB admin to add it.",
             icon="💡",
         )
 
@@ -887,7 +862,6 @@ if tab_upload is not None:
                     st.stop()
 
                 new_df = new_df[list(REQUIRED_UPLOAD_COLS)]
-
                 st.markdown(f"**Preview** — {len(new_df)} row(s) detected")
                 st.dataframe(new_df.head(20), use_container_width=True, hide_index=True)
 
@@ -905,7 +879,7 @@ if tab_upload is not None:
                                 errors.append(str(e))
 
                     if errors:
-                        st.error("Some batches failed to upload:\n" + "\n".join(errors[:5]))
+                        st.error("Some batches failed:\n" + "\n".join(errors[:5]))
                     else:
                         st.success(f"Uploaded {len(records)} row(s) successfully ✅")
                         st.cache_data.clear()
@@ -936,7 +910,6 @@ if tab_admin is not None:
             if status_pick:
                 view_df = view_df[view_df["level2_status"].isin(status_pick)]
 
-            # Lookup employee names from attendance data by userid
             name_lookup = df.drop_duplicates("userid").set_index("userid")["name"].to_dict()
 
             def safe_filename(name, userid, att_date, ext):
@@ -953,7 +926,7 @@ if tab_admin is not None:
                         st.markdown(f"**{emp_name}** ({r.userid})")
                         st.caption(f"{r.att_date}  |  {r.old_status or '—'} → {r.new_status or '—'}")
                         st.caption(f"Remark: {r.remark or '—'}")
-                        if not has_attachment:
+                        if not has_attachment and r.new_status != "A":
                             st.caption("⏳ Pending — no valid attachment")
                     with c2:
                         st.caption(f"Requested by: {r.level1_by}")
@@ -973,13 +946,15 @@ if tab_admin is not None:
                                     use_container_width=True
                                 )
                             except Exception:
-                                st.caption("⚠️ Attachment missing or broken (likely a failed old upload)")
+                                st.caption("⚠️ Attachment missing or broken")
+                        elif r.new_status == "A":
+                            st.caption("📝 Remark-only (no attachment for Absent)")
                         else:
                             st.caption("No attachment")
 
             st.divider()
             st.markdown("###### Bulk download")
-            st.caption("Download every attachment in the filtered list above as a single ZIP, each file named EmployeeName_UserID_Date.")
+            st.caption("Download every attachment in the filtered list as a single ZIP.")
 
             if st.button("📦 Download All as ZIP", type="primary"):
                 rows_with_files = [
