@@ -771,6 +771,78 @@ with tab_leave:
             mime="text/csv",
         )
 
+        # ────────────────────────────────────────
+        # Attach a missing mail directly to a leave date.
+        # This covers leave that was bulk-uploaded by Admin
+        # (so it never went through the edit/change flow)
+        # and just needs proof attached after the fact —
+        # it does NOT change the attendance status, only
+        # records the attachment against that date.
+        # ────────────────────────────────────────
+        pending_leave = leave_rows[leave_rows["mail_status"] == "⏳"].copy()
+
+        st.write("")
+        st.markdown("###### 📎 Attach missing approval mail")
+        if pending_leave.empty:
+            st.success("All leave dates in this view already have a mail attachment ✅")
+        else:
+            st.caption(
+                f"{len(pending_leave)} leave day(s) above are showing ⏳. "
+                "Click a row to upload its leave-approval mail — no need to change the status."
+            )
+            pending_leave = pending_leave.sort_values(["name", "date"])
+            for _, lr in pending_leave.iterrows():
+                exp_label = f"{lr['name']} ({lr['userid']}) — {lr['date_disp']}"
+                with st.expander(exp_label):
+                    mail_file = st.file_uploader(
+                        "📩 Leave approval mail (screenshot, PDF, or .eml/.msg)",
+                        type=["png", "jpg", "jpeg", "pdf", "eml", "msg"],
+                        key=f"pendingmail_{lr['userid']}_{lr['date_iso']}",
+                    )
+                    note = st.text_input(
+                        "Note (optional)",
+                        key=f"pendingnote_{lr['userid']}_{lr['date_iso']}",
+                    )
+                    if st.button("✅ Attach Mail", key=f"attachbtn_{lr['userid']}_{lr['date_iso']}", type="primary"):
+                        if mail_file is None:
+                            st.error("Please choose a file first.")
+                        else:
+                            file_bytes = mail_file.getvalue()
+                            file_ext = mail_file.name.split(".")[-1]
+                            storage_path = (
+                                f"{st.session_state.username}_{lr['userid']}_"
+                                f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_mail.{file_ext}"
+                            )
+                            try:
+                                supabase.storage.from_("approval-attachments").upload(
+                                    storage_path, file_bytes, {"content-type": mail_file.type}
+                                )
+                                attachment_url = supabase.storage.from_(
+                                    "approval-attachments"
+                                ).get_public_url(storage_path)
+                            except Exception as e:
+                                st.error(f"Upload failed: {e}")
+                                st.stop()
+
+                            supabase.table(REQ_TABLE).insert({
+                                "userid": lr["userid"],
+                                "att_date": lr["date_iso"],
+                                "old_status": "L",
+                                "new_status": "L",
+                                "remark": note.strip() if note and note.strip() else "Leave approval mail attached (no status change)",
+                                "attachment_url": attachment_url,
+                                "level1_by": st.session_state.username,
+                                "level1_at": datetime.utcnow().isoformat(),
+                                "level1_status": "APPROVED",
+                                "level2_status": "APPROVED",
+                                "level2_by": "AUTO (no approver required)",
+                                "level2_at": datetime.utcnow().isoformat(),
+                            }).execute()
+
+                            st.success(f"Mail attached for {lr['name']} on {lr['date_disp']} ✅")
+                            st.cache_data.clear()
+                            st.rerun()
+
 
 # ───── TAB: Admin - Upload Monthly Attendance ─────
 if tab_upload is not None:
