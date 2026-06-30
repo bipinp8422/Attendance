@@ -38,107 +38,104 @@ st.set_page_config(
 # ────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .main { background-color: #f6f7fb; }
-    h1, h2, h3 { font-weight: 700; }
+    .stApp { background: linear-gradient(180deg, #f7f8fc 0%, #eef1f8 100%); }
+    h1, h2, h3 { font-weight: 800; letter-spacing: -0.01em; }
+
+    /* ---- Header banner ---- */
+    .app-header {
+        background: linear-gradient(120deg, #4f46e5 0%, #7c3aed 100%);
+        border-radius: 18px;
+        padding: 22px 28px;
+        color: #fff;
+        margin-bottom: 18px;
+        box-shadow: 0 8px 24px rgba(79,70,229,0.25);
+    }
+    .app-header h1 { color: #fff; margin: 0; font-size: 26px; }
+    .app-header p { color: #e0e7ff; margin: 4px 0 0 0; font-size: 14px; }
+
+    /* ---- Metric cards ---- */
     .metric-card {
         background: #ffffff;
-        border-radius: 14px;
-        padding: 18px 20px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+        border-radius: 16px;
+        padding: 20px 18px;
+        box-shadow: 0 2px 8px rgba(17,24,39,0.05);
         border: 1px solid #eef0f5;
         text-align: center;
+        transition: transform .15s ease, box-shadow .15s ease;
     }
-    .metric-card .value {
-        font-size: 28px;
-        font-weight: 800;
-        margin: 4px 0 0 0;
+    .metric-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 10px 24px rgba(79,70,229,0.12);
+        border-color: #c7d2fe;
     }
+    .metric-card .value { font-size: 30px; font-weight: 800; margin: 6px 0 0 0; color: #1f2937; }
     .metric-card .label {
-        font-size: 13px;
-        color: #6b7280;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
+        font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
     }
+
+    /* ---- Login screen ---- */
     .login-card {
         background: #ffffff;
-        border-radius: 16px;
-        padding: 28px 26px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.07);
+        border-radius: 20px;
+        padding: 32px 28px;
+        box-shadow: 0 12px 32px rgba(79,70,229,0.10);
         border: 1px solid #eef0f5;
     }
-    .login-banner {
-        text-align: center;
-        padding: 36px 0 18px 0;
+    .login-banner { text-align: center; padding: 44px 0 22px 0; }
+    .login-banner h1 { font-size: 38px; margin-bottom: 6px;
+        background: linear-gradient(120deg, #4f46e5, #7c3aed);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
     }
-    .login-banner h1 { font-size: 34px; margin-bottom: 4px; }
     .login-banner p { color: #6b7280; font-size: 15px; }
+
+    /* ---- Buttons ---- */
     div.stButton > button {
-        border-radius: 10px;
-        font-weight: 600;
-        padding: 0.5rem 1.2rem;
+        border-radius: 10px; font-weight: 600; padding: 0.55rem 1.3rem;
+        transition: all .15s ease;
     }
+    div.stButton > button:hover { transform: translateY(-1px); }
     div.stButton > button[kind="primary"] {
-        background-color: #4f46e5;
-        border: none;
+        background: linear-gradient(120deg, #4f46e5, #6d28d9);
+        border: none; box-shadow: 0 4px 14px rgba(79,70,229,0.30);
     }
-    section[data-testid="stSidebar"] {
-        background-color: #ffffff;
-        border-right: 1px solid #eef0f5;
+
+    /* ---- Sidebar ---- */
+    section[data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #eef0f5; }
+    .sidebar-profile {
+        background: linear-gradient(120deg, #eef2ff, #ede9fe);
+        border-radius: 14px; padding: 16px; margin-bottom: 10px; text-align: center;
     }
+    .sidebar-profile .avatar {
+        width: 48px; height: 48px; border-radius: 50%; margin: 0 auto 8px auto;
+        background: linear-gradient(120deg, #4f46e5, #7c3aed);
+        display: flex; align-items: center; justify-content: center;
+        color: #fff; font-weight: 800; font-size: 18px;
+    }
+
     .role-badge {
-        display: inline-block;
-        background: #eef2ff;
-        color: #4338ca;
-        font-weight: 600;
-        font-size: 13px;
-        padding: 4px 12px;
-        border-radius: 999px;
-        margin-bottom: 6px;
+        display: inline-block; background: #eef2ff; color: #4338ca; font-weight: 700;
+        font-size: 12px; padding: 5px 14px; border-radius: 999px; margin-bottom: 6px;
+        letter-spacing: 0.03em;
     }
-    div[data-testid="stExpander"] {
-        border-radius: 12px !important;
-        border: 1px solid #eef0f5 !important;
-    }
+
+    div[data-testid="stExpander"] { border-radius: 14px !important; border: 1px solid #eef0f5 !important; }
+
     .pending-badge {
-        display: inline-block;
-        background: #fef3c7;
-        color: #92400e;
-        font-weight: 700;
-        font-size: 13px;
-        padding: 4px 12px;
-        border-radius: 999px;
+        display: inline-block; background: linear-gradient(120deg, #fef3c7, #fde68a);
+        color: #92400e; font-weight: 700; font-size: 13px; padding: 6px 14px; border-radius: 999px;
+        box-shadow: 0 2px 8px rgba(217,119,6,0.15);
     }
-    /* Requirement badges for change cards */
-    .req-badge-leave {
-        display: inline-block;
-        background: #ede9fe;
-        color: #5b21b6;
-        font-size: 12px;
-        font-weight: 600;
-        padding: 2px 10px;
-        border-radius: 999px;
-        margin-bottom: 4px;
-    }
-    .req-badge-absent {
-        display: inline-block;
-        background: #fee2e2;
-        color: #991b1b;
-        font-size: 12px;
-        font-weight: 600;
-        padding: 2px 10px;
-        border-radius: 999px;
-        margin-bottom: 4px;
-    }
-    .req-badge-other {
-        display: inline-block;
-        background: #e0f2fe;
-        color: #075985;
-        font-size: 12px;
-        font-weight: 600;
-        padding: 2px 10px;
-        border-radius: 999px;
-        margin-bottom: 4px;
-    }
+
+    .req-badge-leave { display: inline-block; background: #ede9fe; color: #5b21b6; font-size: 12px; font-weight: 700; padding: 3px 11px; border-radius: 999px; margin-bottom: 4px; }
+    .req-badge-absent { display: inline-block; background: #fee2e2; color: #991b1b; font-size: 12px; font-weight: 700; padding: 3px 11px; border-radius: 999px; margin-bottom: 4px; }
+    .req-badge-other { display: inline-block; background: #e0f2fe; color: #075985; font-size: 12px; font-weight: 700; padding: 3px 11px; border-radius: 999px; margin-bottom: 4px; }
+
+    /* ---- Tabs ---- */
+    .stTabs [data-baseweb="tab-list"] { gap: 4px; background: #fff; padding: 6px; border-radius: 14px; border: 1px solid #eef0f5; }
+    .stTabs [data-baseweb="tab"] { border-radius: 10px; padding: 8px 16px; font-weight: 600; }
+    .stTabs [aria-selected="true"] { background: linear-gradient(120deg, #eef2ff, #ede9fe) !important; color: #4338ca !important; }
+
+    div[data-testid="stDataFrame"] { border-radius: 14px; overflow: hidden; border: 1px solid #eef0f5; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -277,14 +274,21 @@ if df.empty:
 role_icon = {"TL": "🧑‍💼", "ADMIN": "🛡️"}.get(st.session_state.role, "👤")
 header_l, header_r = st.columns([5, 1])
 with header_l:
-    st.markdown(f"<span class='role-badge'>{role_icon} {st.session_state.role}</span>", unsafe_allow_html=True)
     if st.session_state.role == "TL":
-        st.title(f"Team Attendance – {st.session_state.username}")
-        st.caption("View and directly update your assigned employees' attendance. Leave changes require an attachment; Absent changes require an individual remark.")
+        title = f"Team Attendance – {st.session_state.username}"
+        subtitle = "View and directly update your assigned employees' attendance. Leave changes require an attachment; Absent changes require an individual remark."
     else:
-        st.title(f"Admin Console – {st.session_state.username}")
-        st.caption("Upload monthly attendance, view all records, and download approval attachments across the organization.")
+        title = f"Admin Console – {st.session_state.username}"
+        subtitle = "Upload monthly attendance, view all records, and download approval attachments across the organization."
+    st.markdown(f"""
+    <div class="app-header">
+        <span class="role-badge" style="background:rgba(255,255,255,0.2);color:#fff;">{role_icon} {st.session_state.role}</span>
+        <h1>🗓️ {title}</h1>
+        <p>{subtitle}</p>
+    </div>
+    """, unsafe_allow_html=True)
 with header_r:
+    st.write("")
     st.write("")
     if st.button("🚪 Logout", use_container_width=True):
         logout()
@@ -308,8 +312,14 @@ region_options = sorted(df["store_region"].dropna().unique().tolist())
 status_options = sorted(df["status"].dropna().unique().tolist())
 
 with st.sidebar:
-    st.markdown(f"### 👋 {st.session_state.username}")
-    st.caption(f"Logged in as **{st.session_state.role}**")
+    initials = st.session_state.username[:2].upper() if st.session_state.username else "??"
+    st.markdown(f"""
+    <div class="sidebar-profile">
+        <div class="avatar">{initials}</div>
+        <div style="font-weight:700;">{st.session_state.username}</div>
+        <div style="font-size:12px;color:#6b7280;">Logged in as <b>{st.session_state.role}</b></div>
+    </div>
+    """, unsafe_allow_html=True)
 
     pc1, pc2 = st.columns(2)
     with pc1:
